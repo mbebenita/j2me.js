@@ -10,6 +10,7 @@ module J2ME {
     stack: any [];
     code: Uint8Array;
     bci: number;
+    opBCI: number;
     cp: any;
     localsBase: number;
     lockObject: java.lang.Object;
