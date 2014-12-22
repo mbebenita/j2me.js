@@ -5,6 +5,7 @@ module J2ME {
 
   import Bytecodes = Bytecode.Bytecodes;
   import assert = Debug.assert;
+  import popManyInto = ArrayUtilities.popManyInto;
 
   export var interpreterCounter = null; // new Metrics.Counter(true);
 
@@ -23,6 +24,11 @@ module J2ME {
    * The number of opcodes executed thus far.
    */
   export var ops = 0;
+
+  /**
+   * Temporarily used for fn.apply.
+   */
+  var argArray = [];
 
   export function interpret(ctx: Context) {
     var frame = ctx.current();
@@ -1075,31 +1081,58 @@ module J2ME {
                   fn = obj[methodInfo.mangledName];
                   break;
                 case Bytecodes.INVOKESPECIAL:
-                  fn = jsGlobal[methodInfo.mangledClassAndMethodName];
+                  fn = methodInfo.fn;
                   break;
               }
             } else {
-              fn = jsGlobal[methodInfo.mangledClassAndMethodName];
+              fn = methodInfo.fn;
             }
 
-            var args = frame.popArguments(methodInfo.signatureDescriptor);
-            if (!isStatic) {
-              stack.pop();
+            var returnValue;
+            switch (methodInfo.argumentSlots) {
+              case 0:
+                returnValue = fn.call(obj);
+                break;
+              case 1:
+                var a = stack.pop();
+                returnValue = fn.call(obj, a);
+                break;
+              case 2:
+                var b = stack.pop();
+                var a = stack.pop();
+                returnValue = fn.call(obj, a, b);
+                break;
+              case 3:
+                var c = stack.pop();
+                var b = stack.pop();
+                var a = stack.pop();
+                returnValue = fn.call(obj, a, b, c);
+                break;
+              default:
+                if (methodInfo.argumentSlots > 0) {
+                  popManyInto(stack, methodInfo.argumentSlots, argArray);
+                } else {
+                  frame.popArgumentsInto(methodInfo.signatureDescriptor, argArray);
+                }
+                var returnValue = fn.apply(obj, argArray);
+            }
+            if (!isStatic) stack.pop();
+
+            if (!release) {
+              if (returnValue instanceof Promise) {
+                console.error("You forgot to call asyncImpl():", methodInfo.implKey);
+              } else if (methodInfo.getReturnKind() === Kind.Void && returnValue) {
+                console.error("You returned something in a void method:", methodInfo.implKey);
+              } else if (methodInfo.getReturnKind() !== Kind.Void && (returnValue === undefined) &&
+                U !== J2ME.VMState.Pausing) {
+                console.error("You returned undefined in a non-void method:", methodInfo.implKey);
+              } else if (typeof returnValue === "string") {
+                console.error("You returned a non-wrapped string:", methodInfo.implKey);
+              } else if (returnValue === true || returnValue === false) {
+                console.error("You returned a JS boolean:", methodInfo.implKey);
+              }
             }
 
-            var returnValue = fn.apply(obj, args);
-            if (returnValue instanceof Promise) {
-              console.error("You forgot to call asyncImpl():", methodInfo.implKey);
-            } else if (methodInfo.getReturnKind() === Kind.Void && returnValue) {
-              console.error("You returned something in a void method:", methodInfo.implKey);
-            } else if (methodInfo.getReturnKind() !== Kind.Void && (returnValue === undefined) &&
-                      U !== J2ME.VMState.Pausing) {
-              console.error("You returned undefined in a non-void method:", methodInfo.implKey);
-            } else if (typeof returnValue === "string") {
-              console.error("You returned a non-wrapped string:", methodInfo.implKey);
-            } else if (returnValue === true || returnValue === false) {
-              console.error("You returned a JS boolean:", methodInfo.implKey);
-            }
             if (U) {
               return;
             }

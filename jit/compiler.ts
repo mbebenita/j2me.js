@@ -177,9 +177,11 @@ module J2ME {
 
     // Emit class initializer.
     writer.enter("function " + mangledClassName + "() {");
-    // Emit call to create hash code. We may also want to save the context that created this
-    // object in debug builds for extra assertions.
-    writer.writeLn("this._hashCode = $.nextHashCode(this);");
+    //
+    // Should we or should we not generate hash codes at this point? Eager or lazy, we should at least
+    // initialize it zero to keep object shapes fixed.
+    // writer.writeLn("this._hashCode = $.nextHashCode(this);");
+    writer.writeLn("this._hashCode = 0;");
     getClassInheritanceChain(classInfo).forEach(function (ci) {
       emitFields(ci.fields, false);
     });
@@ -366,7 +368,8 @@ module J2ME {
           return true;
         }
         try {
-          var classInfo = CLASSES.loadClassFile(fileName);
+          var className = fileName.substring(0, fileName.length - 6);
+          var classInfo = CLASSES.getClass(className);
           if (classInfo.sourceFile && !classInfo.sourceFile.match(fileFilter)) {
             return true;
           }

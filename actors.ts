@@ -32,11 +32,14 @@ module J2ME {
     isStatic: boolean ;
     constantValue: any;
     mangledName: string;
+    key: string;
 
     constructor(public classInfo: ClassInfo, public access_flags: number, public name: string, public signature: string) {
       this.id = FieldInfo._nextiId++;
       this.isStatic = AccessFlags.isStatic(access_flags);
+      this.constantValue = undefined;
       this.mangledName = undefined;
+      this.key = undefined;
     }
 
     get(object: java.lang.Object) {
@@ -87,7 +90,10 @@ module J2ME {
     exception_table: ExceptionHandler [];
     max_locals: number;
     max_stack: number;
-    consumes: number;
+    /**
+     * If greater than -1, then the number of arguments to pop of the stack when calling this function.
+     */
+    argumentSlots: number;
     signatureDescriptor: SignatureDescriptor;
     signature: string;
     implKey: string;
@@ -144,9 +150,10 @@ module J2ME {
       this.mangledClassAndMethodName = mangleClassAndMethod(this);
 
       this.signatureDescriptor = SignatureDescriptor.makeSignatureDescriptor(this.signature);
-      this.consumes = this.signatureDescriptor.getArgumentSlotCount();
-      if (!this.isStatic) {
-        this.consumes++;
+      if (this.signatureDescriptor.hasTwoSlotArguments()) {
+        this.argumentSlots = -1;
+      } else {
+        this.argumentSlots = this.signatureDescriptor.getArgumentSlotCount();
       }
     }
 
@@ -319,6 +326,10 @@ module J2ME {
 
     get isInterface() : boolean {
       return AccessFlags.isInterface(this.access_flags);
+    }
+
+    get isFinal() : boolean {
+      return AccessFlags.isFinal(this.access_flags);
     }
 
     implementsInterface(iface) : boolean {
