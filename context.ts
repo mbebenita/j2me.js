@@ -417,6 +417,11 @@ module J2ME {
       this.bailoutFrames.unshift(frame);
     }
 
+    setBailoutFrameLock(object: J2ME.java.lang.Object) {
+      assert(this.bailoutFrames.length > 0, "There must be at least one bailout frame.");
+      this.bailoutFrames[0].lockObject = object;
+    }
+
     resolve(cp, idx: number, isStatic: boolean) {
       var constant = cp[idx];
       if (!constant.tag)

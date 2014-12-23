@@ -160,7 +160,7 @@ module J2ME.C4.IR {
   }
 
   export class JVMInvoke extends StoreDependent {
-    constructor(control: Control, store: Store, public state: State, public opcode: J2ME.Bytecode.Bytecodes, public object: Value, public methodInfo: MethodInfo, public args: Value []) {
+    constructor(control: Control, store: Store, public state: State, public opcode: J2ME.Bytecode.Bytecodes, public object: Value, public methodInfo: MethodInfo, public args: Value [], public callerMethodInfo: MethodInfo) {
       super(control, store);
     }
     visitInputs(visitor: NodeVisitor) {
@@ -499,6 +499,15 @@ module J2ME.C4.Backend {
     return [new AST.Literal(state.bci), local, stack];
   }
 
+  export function compileUnwind(state: State, cx, isSynchronized: boolean): AST.Node {
+    var bailoutMethod = isSynchronized ? "BS" : "B";
+    var ifUnwind = new AST.IfStatement(id("U"), new AST.BlockStatement([
+      new AST.ExpressionStatement(call(property(id("$"), bailoutMethod), compileState(state, cx))),
+      new AST.ReturnStatement(undefined)
+    ]));
+    return ifUnwind;
+  }
+
   IR.JVMInvoke.prototype.compile = function (cx: Context): AST.Node {
     var object = this.object ? compileValue(this.object, cx) : null;
     var args = this.args.map(function (arg) {
@@ -528,11 +537,7 @@ module J2ME.C4.Backend {
       var to = id(this.variable.name);
       cx.useVariable(this.variable);
       block.body.push(new AST.ExpressionStatement(assignment(to, result)));
-      var ifUnwind = new AST.IfStatement(id("U"), new AST.BlockStatement([
-        new AST.ExpressionStatement(call(property(id("$"), "B"), compileState(this.state, cx))),
-        new AST.ReturnStatement(undefined)
-      ]));
-      block.body.push(ifUnwind);
+      block.body.push(compileUnwind(this.state, cx, this.callerMethodInfo.isSynchronized));
       return block;
     }
     return result;

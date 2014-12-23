@@ -590,7 +590,7 @@ module J2ME.C4.Backend {
     }
   }
 
-  export function generate(cfg): Compilation {
+  export function generate(cfg, checkUnwindEntryState: State): Compilation {
     enterTimeline("Looper");
     var root = Looper.analyze(cfg);
     leaveTimeline();
@@ -625,6 +625,10 @@ module J2ME.C4.Backend {
         return new VariableDeclarator(id(variable.name));
       }));
       code.body.unshift(variables);
+    }
+
+    if (checkUnwindEntryState) {
+      code.body.unshift(compileUnwind(checkUnwindEntryState, cx, true));
     }
 
     enterTimeline("Serialize AST");

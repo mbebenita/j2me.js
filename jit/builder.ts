@@ -724,7 +724,7 @@ module J2ME {
       leaveTimeline();
 
       enterTimeline("Generate Source");
-      var result = C4.Backend.generate(cfg);
+      var result = C4.Backend.generate(cfg, methodInfo.isSynchronized ? start.entryState : null);
       leaveTimeline();
 
       Node.stopNumbering();
@@ -1278,7 +1278,7 @@ module J2ME {
       }
       counter && counter.count("Yield Code: " + YieldReason[calleeCanYield] + " " + methodInfo.implKey);
       counter && counter.count("Yield Code: " + YieldReason[calleeCanYield]);
-      var call = new IR.JVMInvoke(this.region, this.state.store, state, opcode, object, methodInfo, args);
+      var call = new IR.JVMInvoke(this.region, this.state.store, state, opcode, object, methodInfo, args, this.methodInfo);
       this.recordStore(call);
       if (types[0].kind !== Kind.Void) {
         this.state.push(types[0].kind, call);

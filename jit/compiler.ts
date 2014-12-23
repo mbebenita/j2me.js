@@ -286,7 +286,7 @@ module J2ME {
             compiledMethodName = "_" + mangledClassAndMethodName + "_";
             // Emit Synchronization Wrapper
             var lockObject = method.isStatic ? "$." + mangleClass(method.classInfo) : "this";
-            var me = "$ME(" + lockObject + "); if (U) return;"; // We may need to unwind after a monitorEnter.
+            var me = "$ME(" + lockObject + ");"; // Inside the compiled function there will be an unwind check.
             var mx = "$MX(" + lockObject + ");";
             writer.writeLn("// Synchronization Wrapper");
             writer.enter("function " + mangledClassAndMethodName + "(" + compiledMethod.args.join(",") + ") {");
@@ -301,6 +301,8 @@ module J2ME {
                 writer.writeLn("var r = " + compiledMethodName + ".call(this);");
               }
             }
+            // If the execution unwinds, the interpreter will handle releasing the lock.
+            writer.writeLn("if (U) { $SL(" + lockObject + "); return; }");
             writer.writeLn(mx);
             writer.writeLn("return r;");
             writer.leave("} catch (e) { " + mx + " throw e; }");
