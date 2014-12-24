@@ -526,6 +526,15 @@ module J2ME {
       $.ctx.bailout(methodInfo, bci, local, stack);
     }
 
+    /**
+     * Same as B, but for methods in a synchronization wrapper.
+     */
+    BS(bci: number, local: any [], stack: any []) {
+      var methodInfo = jitMethodInfos[(<any>arguments.callee.caller.caller).name];
+      release || assert(methodInfo !== undefined);
+      $.ctx.bailout(methodInfo, bci, local, stack);
+    }
+
     yield() {
       U = VMState.Yielding;
     }
@@ -1139,7 +1148,7 @@ module J2ME {
         methodType = MethodType.Native;
       } else {
         fn = findCompiledMethod(klass, methodInfo);
-        if (fn && !methodInfo.isSynchronized) {
+        if (fn) {
           linkWriter && linkWriter.greenLn("Method: " + methodDescription + " -> Compiled");
           methodType = MethodType.Compiled;
           if (!traceWriter) {
@@ -1477,11 +1486,13 @@ var $CDZ = J2ME.checkDivideByZero;
 var $CDZL = J2ME.checkDivideByZeroLong;
 
 var $ME = function monitorEnter(object: J2ME.java.lang.Object) {
-  console.info("ENTER " + J2ME.toDebugString(object));
   $.ctx.monitorEnter(object);
 };
 
 var $MX = function monitorExit(object: J2ME.java.lang.Object) {
-  console.info("EXIT " + J2ME.toDebugString(object));
   $.ctx.monitorExit(object);
+};
+
+var $SL = function setBailoutFrameLock(object: J2ME.java.lang.Object) {
+  $.ctx.setBailoutFrameLock(object);
 };

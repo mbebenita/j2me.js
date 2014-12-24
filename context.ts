@@ -10,6 +10,7 @@ module J2ME {
     stack: any [];
     code: Uint8Array;
     bci: number;
+    opBCI: number;
     cp: any;
     localsBase: number;
     lockObject: java.lang.Object;
@@ -414,6 +415,11 @@ module J2ME {
       frame.stack = stack;
       frame.bci = bci;
       this.bailoutFrames.unshift(frame);
+    }
+
+    setBailoutFrameLock(object: java.lang.Object) {
+      assert(this.bailoutFrames.length > 0, "There must be at least one bailout frame.");
+      this.bailoutFrames[0].lockObject = object;
     }
 
     resolve(cp, idx: number, isStatic: boolean) {
