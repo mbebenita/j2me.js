@@ -3,25 +3,48 @@
 
 'use strict';
 
-if (typeof console === "undefined") {
-  var console = {
-    log: print
+//if (typeof console === "undefined") {
+//  var console = {
+//    log: print
+//  }
+//}
+//
+//console.print = function (c) {
+//  putstr(String.fromCharCode(c));
+//};
+//
+//function check() {
+//
+//}
+//
+//if (scriptArgs.length !== 1) {
+//  print("error: One main class name must be specified.");
+//  print("usage: jsshell <main class name>");
+//  quit(1);
+//}
+
+function putstr(x) {
+  print(x);
+}
+
+function printErr(x) {
+  print(x);
+}
+
+function dateNow() {
+  return 1;
+}
+
+var scriptArgs = ["JITBenchmark"];
+
+var console = {
+  log: function (x) {
+    print(x);
+  },
+  print: function (x) {
+    print(x);
   }
-}
-
-console.print = function (c) {
-  putstr(String.fromCharCode(c));
 };
-
-function check() {
-
-}
-
-if (scriptArgs.length !== 1) {
-  print("error: One main class name must be specified.");
-  print("usage: jsshell <main class name>");
-  quit(1);
-}
 
 var callbacks = [];
 var window = {
@@ -79,10 +102,10 @@ var config = {
 
 try {
   load("libs/relooper.js", "build/j2me.js","libs/zipfile.js", "blackBox.js",
-       "libs/encoding.js", "util.js",
-       "override.js", "native.js", "tests/override.js", 
-       "string.js", "midp/midp.js",
-       "libs/long.js", "midp/crypto.js", "libs/forge/md5.js", "libs/forge/util.js");
+    "libs/encoding.js", "util.js",
+    "override.js", "native.js", "tests/override.js",
+    "string.js", "midp/midp.js",
+    "libs/long.js", "midp/crypto.js", "libs/forge/md5.js", "libs/forge/util.js");
 
   // load("build/classes.jar.js");
   // load("build/program.jar.js");
@@ -103,7 +126,7 @@ try {
   var start = dateNow();
   var jvm = new JVM();
 
-  J2ME.writers = J2ME.WriterFlags.JIT;
+  J2ME.writers = J2ME.WriterFlags.None;
 
   print("INITIALIZATION TIME: " + (dateNow() - start));
 
