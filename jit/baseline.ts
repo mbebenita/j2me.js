@@ -985,9 +985,9 @@ module J2ME {
 
     private emitUnwind(emitter: Emitter, pc: string, nextPC: string, forceInline: boolean = false) {
       // Only emit unwind throws if it saves on code size.
-      if (!forceInline && this.blockMap.invokeCount > 2 &&
-          this.stack.length < 8) {
+      if (!forceInline && this.blockMap.invokeCount > 2 && this.sp < 8) {
         this.flushBlockStack();
+        // We have 8 bailout methods, one for each stack height.
         if (<any>nextPC - <any>pc === 3) {
           emitter.writeLn("U&&B" + this.sp + "(" + pc + ");");
         } else {
