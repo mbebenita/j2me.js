@@ -56,9 +56,6 @@ import java.util.Vector;
  * <p>
  */
 public class AmsUtil {
-    /** Cached reference to the MIDletExecuteEventProducer. */
-    private static MIDletExecuteEventProducer midletExecuteEventProducer;
-
     /** Cached reference to the MIDletControllerEventProducer. */
     private static MIDletControllerEventProducer midletControllerEventProducer;
 
@@ -90,20 +87,6 @@ public class AmsUtil {
     }
 
     /**
-     * Initializes AmsUtil class. shall only be called from
-     * AppIsolateMIDletSuiteLoader's main() in
-     * non-AMS isolates.
-     * No need in security checks since it is package private method.
-     *
-     * @param theMIDletExecuteEventProducer event producer
-     *        to be used by this class to send events
-     */
-    static void initClassInAppIsolate(
-            MIDletExecuteEventProducer theMIDletExecuteEventProducer) {
-        midletExecuteEventProducer = theMIDletExecuteEventProducer;
-    }
-
-    /**
      * Starts a MIDlet in a new Isolate.
      *
      * @param midletSuiteStorage reference to a MIDletStorage object
@@ -132,7 +115,7 @@ public class AmsUtil {
      * @return false to signal that the MIDlet suite does not have to exit
      * before the MIDlet is run
      */
-    static boolean executeWithArgs(MIDletSuiteStorage midletSuiteStorage,
+    public static boolean executeWithArgs(MIDletSuiteStorage midletSuiteStorage,
             int externalAppId, int id, String midlet,
             String displayName, String arg0, String arg1, String arg2,
             int memoryReserved, int memoryTotal, int priority,
@@ -145,21 +128,6 @@ public class AmsUtil {
 
         if (midlet == null) {
             throw new IllegalArgumentException("MIDlet class cannot be null");
-        }
-
-        if (!MIDletSuiteUtils.isAmsIsolate()) {
-            /*
-             * This is not the AMS isolate so send the request to the
-             * AMS isolate.
-             */
-            midletExecuteEventProducer.sendMIDletExecuteEvent(
-                externalAppId, id,
-                midlet, displayName,
-                arg0, arg1, arg2,
-                memoryReserved, memoryTotal, priority,
-                profileName, isDebugMode
-            );
-            return false;
         }
 
         // Don't start the MIDlet if it is already running.
