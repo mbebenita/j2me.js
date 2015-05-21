@@ -40,13 +40,17 @@ function receiveSms(text, addr) {
  * the app.
  */
 function promptForMessageText() {
-    var el = document.getElementById('sms-listener-prompt').cloneNode(true);
+    var smsTemplateNode = document.getElementById('sms-listener-prompt');
+    var el = smsTemplateNode.cloneNode(true);
     el.style.display = 'block';
     el.classList.add('visible');
 
     el.querySelector('p.verificationText').textContent = MIDlet.SMSDialogVerificationText;
 
     var input = el.querySelector('input');
+    if (MIDlet.SMSDialogInputType) {
+      input.type = MIDlet.SMSDialogInputType;
+    }
     var btnCancel = el.querySelector('button.cancel');
     var btnDone = el.querySelector('button.recommend');
 
@@ -54,6 +58,15 @@ function promptForMessageText() {
     input.addEventListener('input', function() {
         btnDone.disabled = (input.value.length === 0);
     });
+    if (MIDlet.SMSDialogInputMaxLength) {
+      input.onkeydown = function(e) {
+        if (input.value.length >= MIDlet.SMSDialogInputMaxLength) {
+          return e.keyCode !== 0 && !util.isPrintable(e.keyCode);
+        }
+
+        return true;
+      }
+    }
 
     btnCancel.addEventListener('click', function() {
         console.warn('SMS prompt canceled.');
@@ -66,7 +79,6 @@ function promptForMessageText() {
         clearInterval(intervalID);
         clearTimeout(timeoutID);
         el.parentElement.removeChild(el);
-        console.log('SMS prompt filled out:', input.value);
         // We don't have easy access to our own phone number; use a
         // dummy unknown value instead.
         receiveSms(MIDlet.SMSDialogReceiveFilter(input.value), 'unknown');
@@ -79,7 +91,7 @@ function promptForMessageText() {
 
       var text = minutes + ":";
 
-      if (seconds > 10) {
+      if (seconds >= 10) {
         text += seconds;
       } else {
         text += "0" + seconds;
@@ -91,8 +103,11 @@ function promptForMessageText() {
     el.querySelector('p.timeLeft').textContent = toTimeText(MIDlet.SMSDialogTimeout) +
                                                  " " + MIDlet.SMSDialogTimeoutText;
 
-    document.body.appendChild(el);
-    input.focus();
+    smsTemplateNode.parentNode.appendChild(el);
+    if (currentlyFocusedTextEditor) {
+      currentlyFocusedTextEditor.blur();
+      currentlyFocusedTextEditor = null;
+    }
 
     var elapsedMS = 0;
     var intervalID = setInterval(function() {
@@ -113,7 +128,7 @@ Native["com/sun/midp/io/j2me/sms/Protocol.open0.(Ljava/lang/String;II)I"] = func
     MIDP.smsConnections[++MIDP.lastSMSConnection] = {
       port: port,
       msid: msid,
-      host: util.fromJavaString(host),
+      host: J2ME.fromJavaString(host),
     };
 
     return ++MIDP.lastSMSConnection;
@@ -122,28 +137,26 @@ Native["com/sun/midp/io/j2me/sms/Protocol.open0.(Ljava/lang/String;II)I"] = func
 Native["com/sun/midp/io/j2me/sms/Protocol.receive0.(IIILcom/sun/midp/io/j2me/sms/Protocol$SMSPacket;)I"] =
 function(port, msid, handle, smsPacket) {
     asyncImpl("I", new Promise(function(resolve, reject) {
-        promptForMessageText();
-
         function receiveSMS() {
             var sms = MIDP.j2meSMSMessages.shift();
             var text = sms.text;
             var addr = sms.addr;
 
-            var message = util.newPrimitiveArray("B", text.length);
+            var message = J2ME.newByteArray(text.length);
             for (var i = 0; i < text.length; i++) {
                 message[i] = text.charCodeAt(i);
             }
 
-            var address = util.newPrimitiveArray("B", addr.length);
+            var address = J2ME.newByteArray(addr.length);
             for (var i = 0; i < addr.length; i++) {
                 address[i] = addr.charCodeAt(i);
             }
 
-            smsPacket.klass.classInfo.getField("I.message.[B").set(smsPacket, message);
-            smsPacket.klass.classInfo.getField("I.address.[B").set(smsPacket, address);
-            smsPacket.klass.classInfo.getField("I.port.I").set(smsPacket, port);
-            smsPacket.klass.classInfo.getField("I.sentAt.J").set(smsPacket, Long.fromNumber(Date.now()));
-            smsPacket.klass.classInfo.getField("I.messageType.I").set(smsPacket, 0); // GSM_TEXT
+            smsPacket.message = message;
+            smsPacket.address = address;
+            smsPacket.port = port;
+            smsPacket.sentAt = Date.now();
+            smsPacket.messageType = 0; // GSM_TEXT
 
             return text.length;
         }
@@ -173,22 +186,25 @@ Native["com/sun/midp/io/j2me/sms/Protocol.send0.(IILjava/lang/String;II[B)I"] =
 function(handle, type, host, destPort, sourcePort, message) {
     var ctx = $.ctx;
     asyncImpl("I", new Promise(function(resolve, reject) {
-        var activity = new MozActivity({
+        var pipe = DumbPipe.open("mozActivity", {
             name: "new",
             data: {
-              type: "websms/sms",
-              number: util.fromJavaString(host),
-              body: new TextDecoder('utf-16be').decode(message),
+                type: "websms/sms",
+                number: J2ME.fromJavaString(host),
+                body: new TextDecoder('utf-16be').decode(message),
             },
+        }, function(message) {
+            switch (message.type) {
+                case "onsuccess":
+                    DumbPipe.close(pipe);
+                    resolve(message.byteLength);
+                    break;
+
+                case "onerror":
+                    ctx.setAsCurrentContext();
+                    reject($.newIOException("Error while sending SMS message"));
+                    break;
+            }
         });
-
-        activity.onsuccess = function() {
-          resolve(message.byteLength);
-        };
-
-        activity.onerror = function() {
-          ctx.setAsCurrentContext();
-          reject($.newIOException("Error while sending SMS message"));
-        };
     }));
 };

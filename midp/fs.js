@@ -5,26 +5,28 @@
 
 var RECORD_STORE_BASE = "/RecordStore";
 
-// The filesystem roots, which are used by both FileSystemRegistry.getRootsImpl
+// The filesystem roots, which are used by both FileSystemRegistry.getRoots
 // and System.getProperty to provide inquiring midlets with the list.  Each root
 // must have a trailing slash.  See FileSystemRegistry.listRoots for more info.
 MIDP.fsRoots = [
     "MemoryCard/",
+    "Persistent/",
     "Phone/",
     "Private/",
 ];
 // The names here should be localized.
 MIDP.fsRootNames = [
     "Memory card",
+    "Persistent",
     "Phone memory",
     "Private",
 ];
 
-function getAbsolutePath(jPath) {
-    return "/" + util.decodeUtf8(jPath);
-}
-
 Native["com/sun/midp/io/j2me/storage/File.initConfigRoot.(I)Ljava/lang/String;"] = function(storageId) {
+    return J2ME.newString("assets/" + storageId + "/");
+};
+
+Native["com/sun/midp/io/j2me/storage/File.initStorageRoot.(I)Ljava/lang/String;"] = function(storageId) {
     return J2ME.newString("assets/" + storageId + "/");
 };
 
@@ -34,19 +36,29 @@ Native["com/sun/midp/midletsuite/MIDletSuiteStorage.getSecureFilenameBase.(I)Lja
 
 Native["com/sun/midp/rms/RecordStoreUtil.exists.(Ljava/lang/String;Ljava/lang/String;I)Z"] =
 function(filenameBase, name, ext) {
-    asyncImpl("Z", new Promise(function(resolve, reject) {
-        var path = RECORD_STORE_BASE + "/" + util.fromJavaString(filenameBase) + "/" + util.fromJavaString(name) + "." + ext;
-        fs.exists(path, function(exists) { resolve(exists ? 1 : 0) });
-    }));
+    var path = RECORD_STORE_BASE + "/" + J2ME.fromJavaString(filenameBase) + "/" + J2ME.fromJavaString(name) + "." + ext;
+    return fs.exists(path) ? 1 : 0;
 };
 
 Native["com/sun/midp/rms/RecordStoreUtil.deleteFile.(Ljava/lang/String;Ljava/lang/String;I)V"] =
 function(filenameBase, name, ext) {
-    asyncImpl("V", new Promise(function(resolve, reject) {
-        var path = RECORD_STORE_BASE + "/" + util.fromJavaString(filenameBase) + "/" + util.fromJavaString(name) + "." + ext;
+    var path = RECORD_STORE_BASE + "/" + J2ME.fromJavaString(filenameBase) + "/" + J2ME.fromJavaString(name) + "." + ext;
+    fs.remove(path);
+};
 
-        fs.remove(path, resolve);
-    }));
+Native["com/sun/midp/rms/RecordStoreFile.getNumberOfStores.(Ljava/lang/String;)I"] =
+function(filenameBase) {
+    var path = RECORD_STORE_BASE + "/" + J2ME.fromJavaString(filenameBase);
+    return fs.list(path).length;
+};
+
+Native["com/sun/midp/rms/RecordStoreFile.getRecordStoreList.(Ljava/lang/String;[Ljava/lang/String;)V"] =
+function (filenameBase, names) {
+    var path = RECORD_STORE_BASE + "/" + J2ME.fromJavaString(filenameBase);
+    var files = fs.list(path);
+    for (var i = 0; i < files.length; i++) {
+        names[i] = J2ME.newString(files[i]);
+    }
 };
 
 Native["com/sun/midp/rms/RecordStoreFile.spaceAvailableNewRecordStore0.(Ljava/lang/String;I)I"] = function(filenameBase, storageId) {
@@ -68,43 +80,37 @@ Native["com/sun/midp/rms/RecordStoreFile.spaceAvailableRecordStore.(ILjava/lang/
 Native["com/sun/midp/rms/RecordStoreFile.openRecordStoreFile.(Ljava/lang/String;Ljava/lang/String;I)I"] =
 function(filenameBase, name, ext) {
     var ctx = $.ctx;
-    asyncImpl("I", new Promise(function(resolve, reject) {
-        var path = RECORD_STORE_BASE + "/" + util.fromJavaString(filenameBase) + "/" + util.fromJavaString(name) + "." + ext;
 
-        function openCallback(fd) {
-            ctx.setAsCurrentContext();
-            if (fd == -1) {
-                reject($.newIOException("openRecordStoreFile: open failed"));
-            } else {
-                resolve(fd); // handle
-            }
+    var path = RECORD_STORE_BASE + "/" + J2ME.fromJavaString(filenameBase) + "/" + J2ME.fromJavaString(name) + "." + ext;
+
+    function open() {
+        asyncImpl("I", new Promise(function(resolve, reject) {
+            fs.open(path, function(fd) {
+                if (fd == -1) {
+                    ctx.setAsCurrentContext();
+                    reject($.newIOException("openRecordStoreFile: open failed"));
+                } else {
+                    resolve(fd); // handle
+                }
+            });
+        }));
+    }
+
+    if (fs.exists(path)) {
+        open();
+    } else {
+        // Per the reference impl, create the file if it doesn't exist.
+        var dirname = fs.dirname(path);
+        if (!fs.mkdirp(dirname)) {
+            throw $.newIOException("openRecordStoreFile: mkdirp failed");
         }
 
-        fs.exists(path, function(exists) {
-            if (exists) {
-                fs.open(path, openCallback);
-            } else {
-                // Per the reference impl, create the file if it doesn't exist.
-                var dirname = fs.dirname(path);
-                fs.mkdirp(dirname, function(created) {
-                    if (created) {
-                        fs.create(path, new Blob(), function(created) {
-                            ctx.setAsCurrentContext();
-                            if (created) {
-                                fs.open(path, openCallback);
-                            }
-                            else {
-                                reject($.newIOException("openRecordStoreFile: create failed"));
-                            }
-                        });
-                    } else {
-                        ctx.setAsCurrentContext();
-                        reject($.newIOException("openRecordStoreFile: mkdirp failed"));
-                    }
-                });
-            }
-        });
-    }));
+        if (!fs.create(path, new Blob())) {
+            throw $.newIOException("openRecordStoreFile: create failed");
+        }
+
+        open();
+    }
 };
 
 Native["com/sun/midp/rms/RecordStoreFile.setPosition.(II)V"] = function(handle, pos) {
@@ -128,7 +134,7 @@ Native["com/sun/midp/rms/RecordStoreFile.readBytes.(I[BII)I"] = function(handle,
 };
 
 Native["com/sun/midp/rms/RecordStoreFile.writeBytes.(I[BII)V"] = function(handle, buf, offset, numBytes) {
-    fs.write(handle, buf.subarray(offset, offset + numBytes));
+    fs.write(handle, buf, offset, numBytes);
 };
 
 Native["com/sun/midp/rms/RecordStoreFile.commitWrite.(I)V"] = function(handle) {
@@ -148,7 +154,7 @@ MIDP.RecordStoreCache = [];
 
 Native["com/sun/midp/rms/RecordStoreSharedDBHeader.getLookupId0.(ILjava/lang/String;I)I"] =
 function(suiteId, jStoreName, headerDataSize) {
-    var storeName = util.fromJavaString(jStoreName);
+    var storeName = J2ME.fromJavaString(jStoreName);
 
     var sharedHeader =
         MIDP.RecordStoreCache.filter(function(v) { return (v && v.suiteId == suiteId && v.storeName == storeName); })[0];
@@ -226,7 +232,7 @@ Native["com/sun/midp/rms/RecordStoreSharedDBHeader.getHeaderRefCount0.(I)I"] = f
 };
 
 Native["com/sun/midp/rms/RecordStoreSharedDBHeader.cleanup0.()V"] = function() {
-    var lookupId = this.klass.classInfo.getField("I.lookupId.I").get(this);
+    var lookupId = this.lookupId;
     if (MIDP.RecordStoreCache[lookupId] &&
         --MIDP.RecordStoreCache[lookupId].refCount <= 0) {
         // Set to null instead of removing from array to maintain
@@ -242,397 +248,527 @@ Native["com/sun/midp/rms/RecordStoreSharedDBHeader.finalize.()V"] =
 Native["com/sun/midp/rms/RecordStoreRegistry.getRecordStoreListeners.(ILjava/lang/String;)[I"] =
 function(suiteId, storeName) {
     console.warn("RecordStoreRegistry.getRecordStoreListeners.(IL...String;)[I not implemented (" +
-                 suiteId + ", " + util.fromJavaString(storeName) + ")");
+                 suiteId + ", " + J2ME.fromJavaString(storeName) + ")");
     return null;
 };
 
 Native["com/sun/midp/rms/RecordStoreRegistry.sendRecordStoreChangeEvent.(ILjava/lang/String;II)V"] =
 function(suiteId, storeName, changeType, recordId) {
     console.warn("RecordStoreRegistry.sendRecordStoreChangeEvent.(IL...String;II)V not implemented (" +
-                 suiteId + ", " + util.fromJavaString(storeName) + ", " + changeType + ", " + recordId + ")");
+                 suiteId + ", " + J2ME.fromJavaString(storeName) + ", " + changeType + ", " + recordId + ")");
 };
 
 Native["com/sun/midp/rms/RecordStoreRegistry.startRecordStoreListening.(ILjava/lang/String;)V"] =
 function(suiteId, storeName) {
     console.warn("RecordStoreRegistry.startRecordStoreListening.(IL...String;)V not implemented (" +
-                 suiteId + ", " + util.fromJavaString(storeName) + ")");
+                 suiteId + ", " + J2ME.fromJavaString(storeName) + ")");
 };
 
 Native["com/sun/midp/rms/RecordStoreRegistry.stopRecordStoreListening.(ILjava/lang/String;)V"] =
 function(suiteId, storeName) {
     console.warn("RecordStoreRegistry.stopRecordStoreListening.(IL...String;)V not implemented (" +
-                 suiteId + ", " + util.fromJavaString(storeName) + ")");
+                 suiteId + ", " + J2ME.fromJavaString(storeName) + ")");
 };
 
 Native["com/sun/midp/rms/RecordStoreRegistry.stopAllRecordStoreListeners.(I)V"] = function(taskId) {
     console.warn("RecordStoreRegistry.stopAllRecordStoreListeners.(I)V not implemented (" + taskId + ")");
 };
 
-Native["com/ibm/oti/connection/file/Connection.isValidFilenameImpl.([B)Z"] = function(path) {
-    var invalid = ['<', '>', ':', '"', '/', '\\', '|', '*', '?'].map(function(char) {
-      return char.charCodeAt(0);
-    });
-
-    for (var i = 0; i < path.length; i++) {
-        if (path[i] <= 31 || invalid.indexOf(path[i]) != -1) {
-            return 0;
-        }
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.create.()V"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.create: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.create: ignored file");
+        return;
     }
 
-    return 1;
+    var stat = fs.stat(pathname);
+
+    if (stat !== null || !fs.create(pathname, new Blob())) {
+        throw $.newIOException("error creating " + pathname);
+    }
 };
 
-Native["com/ibm/oti/connection/file/Connection.totalSizeImpl.([B)J"] = function(root) {
-    console.warn("Connection.totalSizeImpl.([B)J not implemented (" + util.decodeUtf8(root) + ")");
-    return Long.fromNumber(-1);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.exists.()Z"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.exists: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.exists: ignored file");
+        return 1;
+    }
+
+    var exists = fs.exists(pathname);
+    DEBUG_FS && console.log("DefaultFileHandler.exists: " + exists);
+    return exists ? 1 : 0;
 };
 
-Native["com/ibm/oti/connection/file/Connection.usedSizeImpl.([B)J"] = function(root) {
-    console.warn("Connection.usedSizeImpl.([B)J not implemented (" + util.decodeUtf8(root) + ")");
-    return Long.fromNumber(-1);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.isDirectory.()Z"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.isDirectory: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.isDirectory: ignored file");
+        return 0;
+    }
+
+    var stat = fs.stat(pathname);
+    var isDirectory = !!stat && stat.isDir;
+    DEBUG_FS && console.log("DefaultFileHandler.isDirectory: " + isDirectory);
+    return isDirectory ? 1 : 0;
+}
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.delete.()V"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.delete: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.delete: ignored file");
+        return;
+    }
+
+    if (!fs.remove(pathname)) {
+        throw $.newIOException();
+    }
 };
 
-Native["com/ibm/oti/connection/file/Connection.availableSizeImpl.([B)J"] = function(root) {
-    console.warn("Connection.availableSizeImpl.([B)J not implemented (" + util.decodeUtf8(root) + ")");
-    // Pretend there is 1 GB available
-    return Long.fromNumber(1024 * 1024 * 1024);
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.rename0.(Ljava/lang/String;)V"] = function(newName) {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    var newPathname = J2ME.fromJavaString(newName);
+    DEBUG_FS && console.log("DefaultFileHandler.rename0: " + pathname + " to " + newPathname);
+
+    if (fs.exists(newPathname)) {
+        throw $.newIOException("file with new name exists");
+    }
+
+    if (!fs.rename(pathname, newPathname)) {
+        throw $.newIOException("error renaming file");
+    }
 };
 
-Native["com/ibm/oti/connection/file/Connection.setHiddenImpl.([BZ)V"] = function(path, value) {
-    console.warn("Connection.setHiddenImpl.([BZ)V not implemented (" + util.decodeUtf8(path) + ")");
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.truncate.(J)V"] = function(byteOffsetL, byteOffsetH) {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.lastModified: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.lastModified: ignored file");
+        return;
+    }
+
+    var stat = fs.stat(pathname);
+
+    if (!stat) {
+        throw $.newIOException("file does not exist");
+    }
+
+    if (stat.isDir) {
+        throw $.newIOException("file is directory");
+    }
+
+    // TODO: If the file is open, flush it first.
+
+    fs.truncate(pathname, byteOffsetL); // REDUX: Is byteOffsetL precise enough?
 };
 
-Native["com/ibm/oti/connection/file/Connection.setReadOnlyImpl.([BZ)V"] = function(path, value) {
-    console.warn("Connection.setReadOnlyImpl.([BZ)V not implemented (" + util.decodeUtf8(path) + ")");
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.fileSize.()J"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.fileSize: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.fileSize: ignored file");
+        return J2ME.returnLongValue(0);
+    }
+
+    return J2ME.returnLongValue(fs.size(pathname));
 };
 
-Native["com/ibm/oti/connection/file/Connection.setWriteOnlyImpl.([BZ)V"] = function(path, value) {
-    console.warn("Connection.setWriteOnlyImpl.([BZ)V not implemented (" + util.decodeUtf8(path) + ")");
+addUnimplementedNative("com/sun/cdc/io/j2me/file/DefaultFileHandler.directorySize.(Z)J",
+                       function() { return J2ME.returnLongValue(0) });
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.canRead.()Z"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.canRead: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.canRead: ignored file");
+        return 1;
+    }
+
+    return J2ME.returnLongValue(fs.exists(pathname) ? 1 : 0);
 };
 
-Native["com/ibm/oti/connection/file/Connection.existsImpl.([B)Z"] = function(path) {
-    asyncImpl("Z", new Promise(function(resolve, reject) {
-        fs.exists(getAbsolutePath(path), function(exists) { resolve(exists ? 1 : 0); } );
-    }));
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.canWrite.()Z"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.canWrite: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.canWrite: ignored file");
+        return 1;
+    }
+
+    return fs.exists(pathname) ? 1 : 0;
 };
 
-Native["com/ibm/oti/connection/file/Connection.directorySizeImpl.([BZ)J"] = function(path, includeSubDirs) {
-    console.warn("Connection.directorySizeImpl.([BZ)J not implemented (" + getAbsolutePath(path) + ", " + includeSubDirs + ")");
-    return Long.fromNumber(0);
-};
-
-Native["com/ibm/oti/connection/file/Connection.fileSizeImpl.([B)J"] = function(path) {
-    asyncImpl("J", new Promise(function(resolve, reject) {
-        fs.size(getAbsolutePath(path), function(size) {
-            resolve(Long.fromNumber(size));
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/Connection.isDirectoryImpl.([B)Z"] = function(path) {
-    asyncImpl("Z", new Promise(function(resolve, reject) {
-        fs.stat(getAbsolutePath(path), function(stat) {
-            resolve(!!stat && stat.isDir ? 1 : 0);
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/Connection.listImpl.([B[BZ)[[B"] =
-function(jPath, filterArray, includeHidden) {
-    var path = getAbsolutePath(jPath);
-    var ctx = $.ctx;
-    asyncImpl("[[B", new Promise(function(resolve, reject) {
-        var filter = "";
-        if (filterArray) {
-            filter = util.decodeUtf8(filterArray);
-            if (filter.contains("?")) {
-                console.warn("Our implementation of Connection::listImpl assumes the filter doesn't contain the ? wildcard character");
-            }
-
-            // Translate the filter to a regular expression
-
-            // Escape regular expression (everything but * and ?)
-            // Source of the regexp: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions
-            filter = filter.replace(/([.+^${}()|\[\]\/\\])/g, "\\$1");
-
-            // Transform * to .+
-            filter = filter.replace(/\*/g, ".*");
-
-            // Require filter to match from the beginning to the end.
-            filter = "^" + filter + "$";
-        }
-
-        fs.list(path, function(error, files) {
-            // For these exceptions, we append a URL representation of the path
-            // in Connection.listInternal, so we don't have to implement getURL
-            // in native code.
-            if (error && error.message == "Path does not exist") {
-                ctx.setAsCurrentContext();
-                return reject($.newIOException("Directory does not exist: "));
-            }
-            if (error && error.message == "Path is not a directory") {
-                ctx.setAsCurrentContext();
-                return reject($.newIOException("Connection is open on a file: "));
-            }
-
-            var regexp = new RegExp(filter);
-            files = files.filter(regexp.test.bind(regexp));
-            var filesArray = J2ME.newArray(J2ME.PrimitiveArrayClassInfo.B.klass, files.length);
-            var encoder = new TextEncoder("utf-8");
-
-            files.forEach(function(file, i) {
-                var bytesFile = encoder.encode(file);
-                var fileArray = util.newPrimitiveArray("B", bytesFile.byteLength);
-                fileArray.set(bytesFile);
-                filesArray[i] = fileArray;
-            });
-
-            resolve(filesArray);
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/Connection.mkdirImpl.([B)I"] = function(path) {
-    asyncImpl("I", new Promise(function(resolve, reject) {
-        fs.mkdir(getAbsolutePath(path), function(created) {
-            // IBM's implementation returns different error numbers, we don't care
-            resolve(created ? 0 : 42);
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/Connection.newFileImpl.([B)I"] = function(jPath) {
-    var path = getAbsolutePath(jPath);
-
-    asyncImpl("I", new Promise(function(resolve, reject) {
-        fs.stat(path, function(stat) {
-            if (stat !== null) {
-                resolve(stat.isDir ? 3 : 1);
-            } else {
-                fs.create(path, new Blob(), function(created) {
-                    resolve(created ? 0 : 42);
-                });
-            }
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/Connection.deleteFileImpl.([B)Z"] = function(path) {
-    asyncImpl("Z", new Promise(function(resolve, reject) {
-        fs.remove(getAbsolutePath(path), function(removed) { resolve(removed ? 1 : 0); });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/Connection.deleteDirImpl.([B)Z"] =
-  Native["com/ibm/oti/connection/file/Connection.deleteFileImpl.([B)Z"];
-
-Native["com/ibm/oti/connection/file/Connection.isReadOnlyImpl.([B)Z"] = function(path) {
-    console.warn("Connection.isReadOnlyImpl.([B)Z not implemented (" + getAbsolutePath(path) + ")");
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.isHidden0.()Z"] = function() {
+    // Per the comment in DefaultFileHandler.isHidden, we pretend we're Unix
+    // and always return false.
     return 0;
 };
 
-Native["com/ibm/oti/connection/file/Connection.isWriteOnlyImpl.([B)Z"] = function(path) {
-    console.warn("Connection.isWriteOnlyImpl.([B)Z not implemented (" + getAbsolutePath(path) + ")");
-    return 0;
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.setReadable.(Z)V"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.setReadable: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.setReadable: ignored file");
+        return;
+    }
+
+    if (!fs.exists(pathname)) {
+        throw $.newIOException("file does not exist");
+    }
+
+    // Otherwise this is a noop, as files are always readable in our filesystem.
 };
 
-Native["com/ibm/oti/connection/file/Connection.lastModifiedImpl.([B)J"] = function(path) {
-    asyncImpl("J", new Promise(function(resolve, reject) {
-        fs.stat(getAbsolutePath(path), function(stat) {
-            resolve(Long.fromNumber(stat != null ? stat.mtime : 0));
-        });
-    }));
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.setWritable.(Z)V"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.setWritable: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.setWritable: ignored file");
+        return;
+    }
+
+    if (!fs.exists(pathname)) {
+        throw $.newIOException("file does not exist");
+    }
+
+    // Otherwise this is a noop, as files are always writable in our filesystem.
 };
 
-Native["com/ibm/oti/connection/file/Connection.renameImpl.([B[B)V"] = function(oldPath, newPath) {
+addUnimplementedNative("com/sun/cdc/io/j2me/file/DefaultFileHandler.setHidden0.(Z)V");
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.mkdir.()V"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.mkdir: " + pathname);
+
+    if (!fs.mkdir(pathname)) {
+        throw $.newIOException("error creating " + pathname);
+    };
+};
+
+// Pretend there is 1GiB in total and available.
+addUnimplementedNative("com/sun/cdc/io/j2me/file/DefaultFileHandler.availableSize.()J",
+                       function() { return J2ME.returnLongValue(1024 * 1024 * 1024) });
+addUnimplementedNative("com/sun/cdc/io/j2me/file/DefaultFileHandler.totalSize.()J",
+                       function() { return J2ME.returnLongValue(1024 * 1024 * 1024) });
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.lastModified.()J"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.lastModified: " + pathname);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("DefaultFileHandler.lastModified: ignored file");
+        return J2ME.returnLongValue(0);
+    }
+
+    var stat = fs.stat(pathname);
+    return J2ME.returnLongValue(stat != null ? stat.mtime : 0);
+};
+
+MIDP.markFileHandler = function(fileHandler, mode, state) {
+    switch(mode) {
+        case "read":
+            fileHandler.isOpenForRead = state ? 1 : 0;
+            break;
+        case "write":
+            fileHandler.isOpenForWrite = state ? 1 : 0;
+            break;
+    }
+};
+
+MIDP.openFileHandler = function(fileHandler, mode) {
+    var pathname = J2ME.fromJavaString(fileHandler.nativePath);
+    DEBUG_FS && console.log("MIDP.openFileHandler: " + pathname + " for " + mode);
+    if (config.ignoredFiles.has(pathname)) {
+        DEBUG_FS && console.log("MIDP.openFileHandler: ignored file");
+        return;
+    }
+
+    if (fileHandler.nativeDescriptor !== -1) {
+        // The file is already open, so we only have to reset its position
+        // and mark it as open.
+        var fd = fileHandler.nativeDescriptor;
+        fs.setpos(fd, 0);
+        MIDP.markFileHandler(fileHandler, mode, true);
+        return;
+    }
+
+    var stat = fs.stat(pathname);
+
+    if (!stat) {
+        throw $.newIOException("file does not exist");
+    }
+
+    if (stat.isDir) {
+        throw $.newIOException("file is a directory");
+    }
+
     var ctx = $.ctx;
+
     asyncImpl("V", new Promise(function(resolve, reject) {
-        fs.rename(getAbsolutePath(oldPath), getAbsolutePath(newPath), function(renamed) {
-            ctx.setAsCurrentContext();
-            if (!renamed) {
-                reject($.newIOException("Rename failed"));
-                return;
+        fs.open(pathname, function(fd) {
+            if (fd === -1) {
+              ctx.setAsCurrentContext();
+              reject($.newIOException("Failed to open file handler for " + pathname));
+              return;
             }
-
+            fileHandler.nativeDescriptor = fd;
+            MIDP.markFileHandler(fileHandler, mode, true);
             resolve();
         });
     }));
 };
 
-Native["com/ibm/oti/connection/file/Connection.truncateImpl.([BJ)V"] = function(path, newLength) {
-    var ctx = $.ctx;
-    asyncImpl("V", new Promise(function(resolve, reject) {
-        fs.open(getAbsolutePath(path), function(fd) {
-          ctx.setAsCurrentContext();
-          if (fd == -1) {
-            reject($.newIOException("truncate failed"));
-            return;
-          }
-
-          fs.ftruncate(fd, newLength.toNumber());
-          fs.close(fd);
-          resolve();
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/FCInputStream.openImpl.([B)I"] = function(path) {
-    asyncImpl("I", new Promise(function(resolve, reject) {
-      fs.open(getAbsolutePath(path), resolve);
-    }));
-};
-
-Native["com/ibm/oti/connection/file/FCInputStream.availableImpl.(I)I"] = function(fd) {
-    return fs.getsize(fd) - fs.getpos(fd);
-};
-
-Native["com/ibm/oti/connection/file/FCInputStream.skipImpl.(JI)J"] = function(count, fd) {
-    var curpos = fs.getpos(fd);
-    var size = fs.getsize(fd);
-    if (curpos + count.toNumber() > size) {
-        fs.setpos(fd, size);
-        return Long.fromNumber(size - curpos);
+MIDP.closeFileHandler = function(fileHandler, mode) {
+    DEBUG_FS && console.log("MIDP.closeFileHandler: " + J2ME.fromJavaString(fileHandler.nativePath) + " for " + mode);
+    if (fileHandler.nativeDescriptor === -1) {
+        DEBUG_FS && console.log("MIDP.closeFileHandler: ignored file");
+        return;
     }
 
-    fs.setpos(fd, curpos + count.toNumber());
-    return count;
-};
+    MIDP.markFileHandler(fileHandler, mode, false);
 
-Native["com/ibm/oti/connection/file/FCInputStream.readImpl.([BIII)I"] = function(buffer, offset, count, fd) {
-    if (offset < 0 || count < 0 || offset > buffer.byteLength || (buffer.byteLength - offset) < count) {
-        throw $.newIndexOutOfBoundsException();
+    var isOpenForOtherMode;
+    switch(mode) {
+        case "read":
+            isOpenForOtherMode = fileHandler.isOpenForWrite;
+            break;
+        case "write":
+            isOpenForOtherMode = fileHandler.isOpenForRead;
+            break;
     }
 
-    if (buffer.byteLength == 0 || count == 0) {
+    // If the file isn't open for the other mode, but it still has a native
+    // descriptor, then it's time to close the native file.  Otherwise, we leave
+    // it open until it gets closed for the other mode.
+    if (isOpenForOtherMode === 0 && fileHandler.nativeDescriptor !== -1) {
+        fs.close(fileHandler.nativeDescriptor);
+        fileHandler.nativeDescriptor = -1;
+    }
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.openForRead.()V"] = function() {
+    MIDP.openFileHandler(this, "read");
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.closeForRead.()V"] = function() {
+    MIDP.closeFileHandler(this, "read");
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.openForWrite.()V"] = function() {
+    MIDP.openFileHandler(this, "write");
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.closeForWrite.()V"] = function() {
+    MIDP.closeFileHandler(this, "write");
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.closeForReadWrite.()V"] = function() {
+    MIDP.closeFileHandler(this, "read");
+    MIDP.closeFileHandler(this, "write");
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.read.([BII)I"] = function(b, off, len) {
+    DEBUG_FS && console.log("DefaultFileHandler.read: " + J2ME.fromJavaString(this.nativePath) + " " + len);
+    if (this.nativeDescriptor === -1) {
+        DEBUG_FS && console.log("DefaultFileHandler.read: ignored file");
+        return -1;
+    }
+
+    var fd = this.nativeDescriptor;
+
+    if (off < 0 || len < 0 || off > b.byteLength || (b.byteLength - off) < len) {
+        throw $.newIOException();
+    }
+
+    if (b.byteLength == 0 || len == 0) {
         return 0;
     }
 
     var curpos = fs.getpos(fd);
-    var data = fs.read(fd, curpos, curpos + count);
-    buffer.set(data, offset);
+    var data = fs.read(fd, curpos, curpos + len);
+    b.set(data, off);
 
     return (data.byteLength > 0) ? data.byteLength : -1;
 };
 
-Native["com/ibm/oti/connection/file/FCInputStream.readByteImpl.(I)I"] = function(fd) {
-    var curpos = fs.getpos(fd);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.skip.(J)J"] = function(l, h) {
+    DEBUG_FS && console.log("DefaultFileHandler.skip: " + J2ME.fromJavaString(this.nativePath));
+    if (this.nativeDescriptor === -1) {
+        DEBUG_FS && console.log("DefaultFileHandler.skip: ignored file");
+        return -1;
+    }
 
-    var data = fs.read(fd, curpos, curpos+1);
+    var toSkip = l;
 
-    return (data.byteLength > 0) ? data[0] : -1;
-};
+    if (toSkip < 0) {
+        return J2ME.returnLongValue(0);
+    }
 
-Native["com/ibm/oti/connection/file/FCInputStream.closeImpl.(I)V"] = function(fd) {
-    if (fd >= 0) {
-      fs.close(fd);
+    var fd = this.nativeDescriptor;
+    var pos = fs.getpos(fd);
+    var size = fs.getsize(fd);
+    if (pos + toSkip > size) {
+        fs.setpos(fd, size);
+        return J2ME.returnLongValue(size - pos);
+    } else {
+        fs.setpos(fd, pos + toSkip);
+        return l;
     }
 };
 
-Native["com/ibm/oti/connection/file/FCOutputStream.closeImpl.(I)V"] = function(fd) {
-    fs.close(fd);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.write.([BII)I"] = function(b, off, len) {
+    DEBUG_FS && console.log("DefaultFileHandler.write: " + J2ME.fromJavaString(this.nativePath) + " " + off + "+" + len);
+    if (this.nativeDescriptor === -1) {
+        DEBUG_FS && console.log("DefaultFileHandler.write: ignored file");
+        return preemptingImpl("I", len);
+    }
+
+    var fd = this.nativeDescriptor;
+    fs.write(fd, b, off, len);
+    // The return value is the "length of data really written," which is
+    // always the same as the length requested in our implementation.
+    return preemptingImpl("I", len);
 };
 
-Native["com/ibm/oti/connection/file/FCOutputStream.openImpl.([B)I"] = function(jPath) {
-    var path = getAbsolutePath(jPath);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.positionForWrite.(J)V"] = function(offsetLow, offsetHigh) {
+    DEBUG_FS && console.log("DefaultFileHandler.positionForWrite: " + J2ME.fromJavaString(this.nativePath));
+    if (this.nativeDescriptor === -1) {
+        DEBUG_FS && console.log("DefaultFileHandler.positionForWrite: ignored file");
+        return;
+    }
 
-    asyncImpl("I", new Promise(function(resolve, reject) {
-        fs.exists(path, function(exists) {
-            if (exists) {
-                fs.open(path, function(fd) {
-                    if (fd != -1) {
-                        fs.ftruncate(fd, 0);
-                    }
-                    resolve(fd);
-                });
-            } else {
-                fs.create(path, new Blob(), function(created) {
-                    if (created) {
-                        fs.open(path, resolve);
-                    } else {
-                        resolve(-1);
-                    }
-                });
-            }
-        });
-    }));
+    var fd = this.nativeDescriptor;
+    fs.setpos(fd, Long.fromBits(offsetLow, offsetHigh).toNumber());
 };
 
-Native["com/ibm/oti/connection/file/FCOutputStream.openOffsetImpl.([BJ)I"] = function(jPath, offset) {
-    var path = getAbsolutePath(jPath);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.flush.()V"] = function() {
+    DEBUG_FS && console.log("DefaultFileHandler.flush: " + J2ME.fromJavaString(this.nativePath));
+    if (this.nativeDescriptor === -1) {
+        DEBUG_FS && console.log("DefaultFileHandler.flush: ignored file");
+        return;
+    }
 
-    asyncImpl("I", new Promise(function(resolve, reject) {
-        function open() {
-            fs.open(path, function(fd) {
-                fs.setpos(fd, offset.toNumber());
-                resolve(fd);
-            });
-        }
-
-        fs.exists(path, function(exists) {
-            if (exists) {
-                open();
-            } else {
-                fs.create(path, new Blob(), function(created) {
-                    if (created) {
-                        open();
-                    } else {
-                        resolve(-1);
-                    }
-                });
-            }
-        });
-    }));
-};
-
-Native["com/ibm/oti/connection/file/FCOutputStream.syncImpl.(I)V"] = function(fd) {
+    var fd = this.nativeDescriptor;
     fs.flush(fd);
 };
 
-Native["com/ibm/oti/connection/file/FCOutputStream.writeByteImpl.(II)V"] = function(val, fd) {
-    var buf = new Uint8Array(1);
-    buf[0] = val;
-    fs.write(fd, buf);
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.close.()V"] = function() {
+    DEBUG_FS && console.log("DefaultFileHandler.close: " + J2ME.fromJavaString(this.nativePath));
+
+    MIDP.closeFileHandler(this, "read");
+    MIDP.closeFileHandler(this, "write");
 };
 
-Native["com/ibm/oti/connection/file/FCOutputStream.writeImpl.([BIII)V"] =
-function(byteArray, offset, count, fd) {
-    fs.write(fd, byteArray.subarray(offset, offset+count));
+// Not implemented because we don't use native pointers, so we've commented out
+// calls to this private method in DefaultFileHandler.
+addUnimplementedNative("com/sun/cdc/io/j2me/file/DefaultFileHandler.getNativeName.(Ljava/lang/String;J)J",
+                       function() { return J2ME.returnLongValue(0) });
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.getFileSeparator.()C"] = function() {
+    return "/".charCodeAt(0);
+}
+
+MIDP.openDirs = new Map();
+MIDP.openDirHandle = 0;
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.openDir.()J"] = function() {
+    var pathname = J2ME.fromJavaString(this.nativePath);
+    DEBUG_FS && console.log("DefaultFileHandler.openDir: " + pathname);
+
+    try {
+        var files = fs.list(pathname);
+    } catch(ex) {
+        if (ex.message == "Path does not exist") {
+            throw $.newIOException("Directory does not exist: file://" + pathname);
+        }
+        if (ex.message == "Path is not a directory") {
+            throw $.newIOException("Connection is open on a file: file://" + pathname);
+        }
+    }
+
+    var openDirHandle = ++MIDP.openDirHandle;
+
+    MIDP.openDirs.set(openDirHandle, {
+        files: files,
+        index: -1,
+    });
+
+    return J2ME.returnLongValue(openDirHandle);
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.closeDir.(J)V"] = function(dirHandleLow, dirHandleHigh) {
+    MIDP.openDirs.delete(dirHandleLow);
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.dirGetNextFile.(JZ)Ljava/lang/String;"] =
+function(dirHandleLow, dirHandleHigh, includeHidden) {
+    var iterator = MIDP.openDirs.get(dirHandleLow);
+    var nextFile = iterator.files[++iterator.index];
+DEBUG_FS && console.log(iterator.index + " " + nextFile);
+    return nextFile ? J2ME.newString(nextFile) : null;
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.getNativePathForRoot.(Ljava/lang/String;)Ljava/lang/String;"] =
+function(root) {
+// XXX Ensure root is in MIDP.fsRoots?
+DEBUG_FS && console.log("getNativePathForRoot: " + J2ME.fromJavaString(root));
+    var nativePath = J2ME.newString("/" + J2ME.fromJavaString(root));
+    return nativePath;
+};
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.illegalFileNameChars0.()Ljava/lang/String;"] = function() {
+    return J2ME.newString('<>:"\\|?');
+};
+
+addUnimplementedNative("com/sun/cdc/io/j2me/file/DefaultFileHandler.initialize.()V");
+
+Native["com/sun/cdc/io/j2me/file/DefaultFileHandler.getSuiteIdString.(I)Ljava/lang/String;"] = function(id) {
+DEBUG_FS && console.log("getSuiteIdString: " + id);
+    // return J2ME.newString(id.toString());
+    // The implementation adds this to the path of the file, presumably
+    // to segregate files by midlet, but we only run a single midlet
+    // per installation, so presumably we don't have to do that.
+    return J2ME.newString("");
+};
+
+Native["com/sun/cdc/io/j2me/file/Protocol.available.()I"] = function() {
+    var fd = this.fileHandler.nativeDescriptor;
+    var available = fs.getsize(fd) - fs.getpos(fd);
+    DEBUG_FS && console.log("Protocol.available: " + J2ME.fromJavaString(this.fileHandler.nativePath) + ": " + available);
+    return available;
 };
 
 Native["com/sun/midp/io/j2me/storage/RandomAccessStream.open.(Ljava/lang/String;I)I"] = function(fileName, mode) {
-    var path = "/" + util.fromJavaString(fileName);
+    var path = "/" + J2ME.fromJavaString(fileName);
 
     var ctx = $.ctx;
-    asyncImpl("I", new Promise(function(resolve, reject) {
-        function open() {
+
+    function open() {
+        asyncImpl("I", new Promise(function(resolve, reject) {
             fs.open(path, function(fd) {
-                ctx.setAsCurrentContext();
                 if (fd == -1) {
+                    ctx.setAsCurrentContext();
                     reject($.newIOException("RandomAccessStream::open(" + path + ") failed opening the file"));
                 } else {
                     resolve(fd);
                 }
             });
-        }
+        }));
+    }
 
-        fs.exists(path, function(exists) {
-            ctx.setAsCurrentContext();
-            if (exists) {
-                open();
-            } else if (mode == 1) {
-                reject($.newIOException("RandomAccessStream::open(" + path + ") file doesn't exist"));
-            } else {
-                fs.create(path, new Blob(), function(created) {
-                    ctx.setAsCurrentContext();
-                    if (created) {
-                        open();
-                    } else {
-                        reject($.newIOException("RandomAccessStream::open(" + path + ") failed creating the file"));
-                    }
-                });
-            }
-        });
-    }));
+    if (fs.exists(path)) {
+        open();
+    } else if (mode == 1) {
+        throw $.newIOException("RandomAccessStream::open(" + path + ") file doesn't exist");
+    } else if (fs.create(path, new Blob())) {
+        open();
+    } else {
+        throw $.newIOException("RandomAccessStream::open(" + path + ") failed creating the file");
+    }
 };
 
 Native["com/sun/midp/io/j2me/storage/RandomAccessStream.read.(I[BII)I"] =
@@ -654,7 +790,7 @@ function(handle, buffer, offset, length) {
 
 Native["com/sun/midp/io/j2me/storage/RandomAccessStream.write.(I[BII)V"] =
 function(handle, buffer, offset, length) {
-    fs.write(handle, buffer.subarray(offset, offset + length));
+    fs.write(handle, buffer, offset, length);
 };
 
 Native["com/sun/midp/io/j2me/storage/RandomAccessStream.commitWrite.(I)V"] = function(handle) {
@@ -676,14 +812,10 @@ Native["com/sun/midp/io/j2me/storage/RandomAccessStream.sizeOf.(I)I"] = function
 };
 
 Native["com/sun/midp/io/j2me/storage/RandomAccessStream.close.(I)V"] = function(handle) {
-        fs.close(handle);
+    fs.close(handle);
 };
 
-Native["javax/microedition/io/file/FileSystemRegistry.initImpl.()V"] = function() {
-    console.warn("javax/microedition/io/file/FileSystemRegistry.initImpl.()V not implemented");
-};
-
-Native["javax/microedition/io/file/FileSystemRegistry.getRootsImpl.()[Ljava/lang/String;"] = function() {
+Native["javax/microedition/io/file/FileSystemRegistry.getRoots.()[Ljava/lang/String;"] = function() {
     var array = J2ME.newStringArray(MIDP.fsRoots.length);
 
     for (var i = 0; i < MIDP.fsRoots.length; i++) {

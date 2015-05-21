@@ -1,4 +1,4 @@
-# j2me.js [![Build Status](https://travis-ci.org/andreasgal/j2me.js.svg)](https://travis-ci.org/andreasgal/j2me.js)
+# j2me.js [![Build Status](https://travis-ci.org/mozilla/j2me.js.svg)](https://travis-ci.org/mozilla/j2me.js)
 
 j2me.js is a J2ME virtual machine in JavaScript.
 
@@ -7,13 +7,25 @@ The current goals of j2me.js are:
 1. Run MIDlets in a way that emulates the reference implementation of phone ME Feature MR4 (b01)
 1. Keep j2me.js simple and small: Leverage the phoneME JDK/infrastructure and existing Java code as much as we can, and implement as little as possible in JavaScript
 
+## Install, Cold, and Warm runs
+
+J2ME.js launches MIDlets under three different circumstances. We are working to make the most common scenario the fastest, sometimes at the expense of making the least frequent scenarios a little slower.
+
+* Install run only happens once per device. It spends extra time downloading, optimizing, and precompiling so that subsequent runs will be faster.
+* Cold runs require starting up both foreground and background MIDlets, if needed
+* Warm runs only require starting up a foreground MIDlet; the interpreter should already be warm, thanks to being awoken once a minute for background MIDlet to run
+
+![](https://cloud.githubusercontent.com/assets/812428/7572315/0a3a174e-f7d2-11e4-811d-5e1a38caa439.png)
+
 ## Building j2me.js
 
 Make sure you have a [JRE](http://www.oracle.com/technetwork/java/javase/downloads/jre7-downloads-1880261.html) installed
 
-Get the [j2me.js repo](https://github.com/andreasgal/j2me.js) if you don't have it already
+You need to install the TypeScript compiler, the easiest way is via NPM: `npm install -g typescript`.
 
-        git clone https://github.com/andreasgal/j2me.js
+Get the [j2me.js repo](https://github.com/mozilla/j2me.js) if you don't have it already
+
+        git clone https://github.com/mozilla/j2me.js
 
 Build using make:
 
@@ -26,7 +38,7 @@ index.html is a webapp that runs j2me.js. The URL parameters you pass to index.h
 
 ### URL parameters
 
-See full list at libs/urlparams.js
+You can specify URL parameters to override the configuration. See the full list of parameters at config/urlparams.js.
 
 * `main` - default is `com/sun/midp/main/MIDletSuiteLoader`
 * `midletClassName` - must be set to the main class to run. Only valid when default `main` parameter is used. Defaults to `RunTests`
@@ -66,7 +78,9 @@ Example - Asteroids
 
 ## Tests
 
-You can run the test suite with `make test`. The main driver for the test suite is automation.js which uses the Casper.js testing framework and slimer.js (a Gecko backend for casper.js). This test suite runs on every push (continuous integration) thanks to Travis.
+You can run the test suite with `make test`. The main driver for the test suite is tests/automation.js which uses the [CasperJS](http://casperjs.org/) testing framework and [SlimerJS](http://slimerjs.org/) (a Gecko backend for CasperJS). This test suite runs on every push (continuous integration) thanks to [Travis CI](https://travis-ci.org/).
+
+`make test` downloads SlimerJS for you automatically, but you have to install CasperJS yourself. The easiest way to do that is via NPM: `npm install -g casperjs`.  On Mac, you may also be able to install it via Brew.
 
 If you want to pass additional [casperJS command line options](http://docs.slimerjs.org/current/configuration.html), look at the "test" target in Makefile and place additional command line options before the automation.js filename.
 
@@ -99,7 +113,6 @@ If the testlet uses sockets, you must start 4 servers (instead of just the http 
 
 Frequent causes of failure include:
 
-* automation.js expects a different number of tests to have passed than the number that actually passed (this is very common when adding new tests)
 * timeout: Travis machines are generally slower than dev machines and so tests that pass locally will fail in the continuous integration tests
 * Number of differing pixels in a gfx/rendering test exceeds the threshold allowed in automation.js. This will often happen because slimerJS uses a different version of Firefox than the developer. This can also happen because the test renders text, whose font rendering can vary from machine to machine, perhaps even with the same font.
 
@@ -143,24 +156,100 @@ Modelines for JS files:
 
 One way to profile j2me.js is to use the JS profiler available in Firefox Dev Tools. This will tell us how well the JVM is working and how well natives work. This type of profiling will not measure time that is taken waiting for async callbacks to be called (for example, when using the native JS filesystem API).
 
-When debugging using the WebIDE, enable the option "select an iframe as the currently targeted document" and select the iframe containing main.html as the debugging target. NB: you need to connect to a target device running FxOS 2.1 or up to use this feature in WebIDE.
+### VM profiling
 
-Use these JS calls within the console to start and stop profiling (TODO: I haven't actually gotten these to work):
+The j2me.js VM has several profiling tools. The simplest feature is to use counters. `runtime.ts` defines several: `runtimeCounter`, `nativeCounter`, etc ... these are only available in debug builds.
 
-        Instrument.startProfile()
-        Instrument.stopProfile()
+To use them, just add calls to `runtimeCounter.count(name, count = 1)`. To view accumulated counts, allow the application to run for some time and then click the `Dump Counters` button. If you want, reset the counter count any time by clicking `Clear Counters`.
 
-It can be helpful to increase this `about:config` option: `devtools.hud.loglimit.console`
+- Counting events:
+  ```
+  function readBytes(fileName, length) {
+    runtimeCounter && runtimeCounter.count("readBytes");
+  }
+  ```
 
-Alternatively, use the "Performance" tab of the Firefox Developer Tools.
+- Counting bucketed events:
+  ```
+  function readBytes(fileName, length) {
+    runtimeCounter && runtimeCounter.count("readBytes " + fileName);
+  }
+  ```
 
-### Java profiling
+- Counting events with larger counts: 
+  ```
+  function readBytes(fileName, length) {
+    runtimeCounter && runtimeCounter.count("readBytes", length);
+  }
+  ```
 
-j2me.js includes its own profiler that is capable of measuring the performance of Java methods running inside its JVM.
+- Counting events with caller context: This is useful to understand which call sites are the most common. 
+  ```
+  function readBytes(fileName, length) {
+    runtimeCounter && runtimeCounter.count("readBytes " + arguments.callee.caller.name);
+  }
+  ```
 
-When running j2me.js in Desktop Firefox, click the "profile" button that appears below the output iframe. Press the button again to stop profiling. You should get output including the total time taken inside each method and the number of times each method was called.
+The second, more heavy weight profiling tool is Shumway's timeline profiler. The profiler records `enter` / `leave` events in a large circular buffer that can be later displayed visually as a flame chart or saved in a text format. To use it, build j2me.js with `PROFILE=[1|2|3]`. Then wrap code regions that you're interested in measuring with calls to `timeline.enter` / `timeline.leave`.
 
-Add "&profile=1" to your URL parameter list to enable profile immediately upon loading j2me.js (index.html).
+Java methods are automatically wrapped with calls to `methodTimeline.enter` /  `methodTimeline.leave`. The resulting timeline is a very detailed trace of the application's execution. Note that this instrumentation has some overhead, and timing information of very short lived events may not be accurate and can lead to the entire application slowing down.
+
+Similar to the way counters work, you can get creative with the timeline profiler. The API looks something like this:
+
+```
+timeline.enter(name: string, details?: Object);
+timeline.leave(name?: string, details?: Object);
+```
+
+You must pair the calls to `enter` and `leave` but you don't necessarily need to specify arguments for `name` and `details`.
+
+The `name` argument can be any string and it specifies a event type. The timeline view will draw different types of events in different colors. It will also give you some statistics about the number of times a certain event type was seen, how long it took, etc.. 
+
+The `details` argument is an object whose properties are shown when you hover over a timeline segment in the profiler view. You can specify this object when you call `timeline.enter` or when you call `timeline.leave`. Usually, you have more information when you call `leave` so that's a more convenient place to put it.
+
+The way in which you come up with event names can produce different results. In the `profilingWrapper` function, the `key` is used to specify the event type.
+
+You can also create your own timelines. At the moment there are 3:
+- `timeline`: VM Events like loading class files, linking, etc.
+- `methodTimeline`: Method execution.
+- `threadTimeline`: Thread scheduling.
+
+You may have to change the CSS height style of the `profileContainer` if you don't see all timelines.
+
+![Shumway's timeline viewer](https://cloud.githubusercontent.com/assets/311082/5998278/644761ec-aa7a-11e4-8149-3556b08b8c54.png)
+
+Top band is an overview of all the timelines. Second band is the `timeline`, third is the `threadTimeline` and finally the fourth is the `methodTimeline`. Use your mouse wheel to zoom in and out, pan and hover.
+
+The tooltip displays:
+- `total`: ms spent in this event including all the child events.
+- `self`: `total` - `total` sum of all child events.
+- `count`: number of events seen with this name.
+- `all total` and `all self`: cumulative total and self times for all events with this name.
+- the remaining fields show the custom data specified in the `details` object.
+
+If you build with `PROFILE=2` or `PROFILE=3`, then the timeline will be saved to a text file instead of being shown in the flame chart. On desktop, you will be prompted to save the file. On the phone, the file will automatically be saved to `/sdcard/downloads/profile.txt`, which you can later pull with `adb pull`. Note that no timeline events under 0.1 ms are written to the file output. You can change this in `main.js` if you'd like.
+
+`PROFILE=1` and `PROFILE=2` automatically profile (most of) cold startup, from *JVM.startIsolate0* to *DisplayDevice.gainedForeground0*; while `PROFILE=3` profiles warm startup, from *BGUtils.maybeWaitUserInteraction* to *DisplayDevice.gainedForeground0*.
+
+## Benchmarks
+
+### Startup Benchmark
+
+The startup benchmark measures from when the benchmark.js file loads to the call of `DisplayDevice.gainedForeground0`. It also measures memory usage after startup. Included in a benchmark build are helpers to build baseline scores so that subsequent runs of the benchmark can be compared. A t-test is used in the comparison to see if the changes were significant.
+
+To use:
+
+*It is recommended that a dedicated Firefox profile is used with the about:config preference of `security.turn_off_all_security_so_that_viruses_can_take_over_this_computer` set to true so garbage collection and cycle collection can be run in between test rounds. To do this on a Firefox OS device, see [B2G/QA/Tips And Tricks](https://wiki.mozilla.org/B2G/QA/Tips_And_Tricks#For_changing_the_preference:).*
+
+1. Check out the version you want to be the baseline (usually mozilla/master).
+1. Build a benchmark build with `RELEASE=1 BENCHMARK=1 make`. *`RELEASE=1` is not required, but it is recommended to avoid debug code from changing execution behavior.*
+1. Open the midlet you want to test with `&logLevel=log` appended to the url and click `Build Benchmark Baseline`.
+1. When finished, the message `FINISHED BUILDING BASELINE` will show up in the log.
+1. Apply/check out your changes to the code.
+1. Rebuild `RELEASE=1 BENCHMARK=1 make`.
+1. Refresh the midlet.
+1. Click `Run Startup Benchmark`.
+1. Once done, the benchmark will dump results to the log. If it says "BETTER" or "WORSE" the t-test has determined the results were significant. If it says "SAME" the changes were likely not enough to be differentiated from the noise of the test.
 
 ## Filesystem
 
@@ -168,9 +257,7 @@ midp/fs.js contains native implementations of various midp filesystem APIs.
 
 Those implementations call out to lib/fs.js which is a JS implementation of a filesystem.
 
-Uses async\_storage.js (from gaia) - async API for accessing IndexedDB
-
-Java APIs are sync but our implementations use async APIs
+Java APIs are sync, so our implementation stores files in memory and makes them available mostly synchronously.
 
 ## Implementing Java functions in native code
 
@@ -184,34 +271,63 @@ Java compiler will do nothing to ensure that implementation actually exists. At 
 
 We use `Native` object in JS to handle creation and registration of `native` functions. See native.js
 
-    Native.create("name/of/function.(parameterTypes)returnType", jsFuncToCall, isAsync)
+    Native["name/of/function.(parameterTypes)returnType"] = jsFuncToCall;
 
 e.g.:
 
-    Native.create("java/lang/System.arraycopy.(Ljava/lang/Object;ILjava/lang/Object;II)V", function(src, srcOffset, dst, dstOffset, length) {...});
+    Native["java/lang/System.arraycopy.(Ljava/lang/Object;ILjava/lang/Object;II)V" = function(src, srcOffset, dst, dstOffset, length) {...};
 
-If you need to implement a method in JS but you can't declare it `native` in Java, use `Override`.
-
-e.g.:
-
-   Override.create("com/ibm/oti/connection/file/Connection.decode.(Ljava/lang/String;)Ljava/lang/String;", function(...) {...});
-
-
-If raising a Java `Exception`, throw new instance of Java `Exception` class as defined in runtime.ts, e.g.:
+If raising a Java `Exception`, throw new instance of Java `Exception` class as defined in vm/runtime.ts, e.g.:
 
     throw $.newNullPointerException("Cannot copy to/from a null array.");
+
+If you need implement a native method with async JS calls, the following steps are required:
+
+1. Add the method to the `yieldMap` in jit/analyze.ts
+2. Use `asyncImpl` in native.js to return the asnyc value with a `Promise`.
+
+e.g:
+
+    Native["java/lang/Thread.sleep.(J)V"] = function(delay) {
+        asyncImpl("V", new Promise(function(resolve, reject) {
+            window.setTimeout(resolve, delay.toNumber());
+        }));
+    };
+
+The `asyncImpl` call is optional if part of the code doesn't make async calls. The method can sometimes return a value synchronously, and the VM will handle it properly. However, if a native ever calls asyncImpl, even if it doesn't always do so, then you need to add the method to `yieldMap`.
+
+e.g:
+
+    Native["java/lang/Thread.newSleep.(J)Z"] = function(delay) {
+        if (delay < 0) {
+          // Return false synchronously. Note: we use 1 and 0 in JavaScript to
+          // represent true and false in Java.
+          return 0;
+        }
+        // Return true asynchronously with `asyncImpl`.
+        asyncImpl("Z", new Promise(function(resolve, reject) {
+            window.setTimeout(resolve.bind(null, 1), delay.toNumber());
+        }));
+    };
 
 Remember:
 
   * Return types are automatically converted to Java types, but parameters are not automatically converted from Java types to JS types
-  * Pass `true` as last param if JS will make async calls and return a `Promise`
   * `this` will be available in any context that `this` would be available to the Java method. i.e. `this` will be `null` for `static` methods.
-  * Context is last param to every function registered using `Native.create` or `Override.create`
+  * `$` is current runtime and `$.ctx` current Context
   * Parameter types are specified in [JNI](http://www.iastate.edu/~java/docs/guide/nativemethod/types.doc.html)
+
+## Overriding Java functions with JavaScript functions
+
+To override a Java function with a JavaScript function, simply define a Native as
+described earlier. Any Java functions can be overridden, not only Java functions
+with the `native` keyword.
+
+Overriding Java functions only works in debug mode (RELEASE=0).
 
 ## Packaging
 
-The repository includes tools for packaging j2me.js into an Open Web App.
+`make app` packages j2me.js into an Open Web App in output directory.
 It's possible to simply package the entire contents of your working directory,
 but these tools will produce a better app.
 
@@ -225,9 +341,3 @@ To use it, first install a recent version of the
 ### Compiling With Closure
 
 `make closure` compiles some JavaScript code with the Closure compiler.
-
-To use it, first download Shumway's version of the compiler to tools/closure.jar:
-
-```
-wget https://github.com/mozilla/shumway/raw/master/utils/closure.jar -P tools/
-```

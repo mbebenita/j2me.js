@@ -8,49 +8,131 @@ module J2ME {
   import BlockMap = Bytecode.BlockMap;
   import ExceptionBlock = Bytecode.ExceptionBlock;
 
+  export interface Relooper {
+    addBlock(text: string, branchVar?: string): number;
+    addBranch(from: number, to: number, condition?: string, code?: string);
+    render(entry: number): string;
+    init(): string;
+  }
+
   var writer = null; // new IndentingWriter();
 
-  export var baselineCounter = new Metrics.Counter(true);
+  declare var Relooper;
 
-  var optimizeControlFlow = true;
+  export var baselineCounter = null; // new Metrics.Counter(true);
 
+  /**
+   * The preemption check should be quick. We don't always want to measure
+   * time so we use a quick counter and mask to determine when to do the
+   * more expensive preemption check.
+   */
+  var preemptionSampleMask = 0xFF;
+
+  /**
+   * Expressions to inline for commonly invoked methods.
+   */
+  var inlineMethods = {
+    "java/lang/Object.<init>.()V": "undefined"
+  };
+
+  /**
+   * These methods have special powers. Methods are added to this set based on the regexp patterns in |privilegedPatterns|.
+   */
+  var privilegedMethods = {};
+
+  var privilegedPatterns = [
+    "com/sun/midp/crypto/SHA*",
+    "java/io/DataInputStream*",
+    "org/mozilla/internal/Sys*",
+  ];
+
+  /**
+   * Emits optimization results inline as comments in the generated source.
+   */
   var emitDebugInfoComments = false;
 
+  /**
+   * Emits control flow and yielding assertions.
+   */
   var emitCompilerAssertions = false;
 
+  /**
+   * Emits profiling code that counts the number of times a method is invoked.
+   */
   var emitCallMethodCounter = false;
 
+  /**
+   * Emits profiling code that counts the number of times control flow is dispatched
+   * to a basic block.
+   */
   var emitCallMethodLoopCounter = false;
 
-  export var baselineTotal = 0;
-  export var baselineCompiled = 0;
+  /**
+   * Emits array bounds checks. Although this is necessary for correctness, most
+   * applications work without them.
+   */
+  export var emitCheckArrayBounds = true;
+
+  /**
+   * Inline calls to runtime methods whenever possible.
+   */
+  export var inlineRuntimeCalls = true;
+
+  /**
+   * Emits array store type checks. Although this is necessary for correctness,
+   * most applications work without them.
+   */
+  export var emitCheckArrayStore = true;
+
+  /**
+   * Unsafe methods.
+   */
+  function isPrivileged(methodInfo: MethodInfo) {
+    var privileged = privilegedMethods[methodInfo.implKey];
+    if (privileged) {
+      return true;
+    } else if (privileged === false) {
+      return false;
+    }
+    // Check patterns.
+    for (var i = 0; i < privilegedPatterns.length; i++) {
+      if (methodInfo.implKey.match(privilegedPatterns[i])) {
+        return privilegedMethods[methodInfo.implKey] = true;
+      }
+    }
+    return privilegedMethods[methodInfo.implKey] = false;
+  }
+
+  /**
+   * Emits preemption checks for methods that already yield.
+   */
+  export var emitCheckPreemption = true;
 
   export function baselineCompileMethod(methodInfo: MethodInfo, target: CompilationTarget): CompiledMethodInfo {
     var compileExceptions = true;
     var compileSynchronized = true;
 
-    if (!compileExceptions && methodInfo.exception_table && methodInfo.exception_table.length) {
+    if (!compileExceptions && methodInfo.exception_table_length) {
       throw new Error("Method: " + methodInfo.implKey + " has exception handlers.");
     }
     if (!compileSynchronized && methodInfo.isSynchronized) {
       throw new Error("Method: " + methodInfo.implKey + " is synchronized.");
     }
     writer && writer.writeLn("Compile: " + methodInfo.implKey);
-    baselineTotal ++;
-    try {
-      var result = new BaselineCompiler(methodInfo, target).compile();
-      baselineCompiled ++;
-      return result;
-    } catch (e) {
-      throw e;
-    }
+    return new BaselineCompiler(methodInfo, target).compile();
   }
 
   class Emitter {
-    private buffer: string [];
+    private _buffer: string [];
     private _indent = 0;
-    constructor() {
-      this.buffer = [];
+    private _emitIndent;
+    constructor(emitIndent: boolean = true) {
+      this._buffer = [];
+      this._emitIndent = emitIndent;
+    }
+    reset() {
+      this._buffer.length = 0;
+      this._indent = 0;
     }
     enter(s: string) {
       this.writeLn(s);
@@ -66,12 +148,26 @@ module J2ME {
       this._indent ++;
     }
     writeLn(s: string) {
-      var prefix = "";
-      for (var i = 0; i < this._indent; i++) {
-        prefix += "  ";
+      if (this._emitIndent) {
+        var prefix = "";
+        for (var i = 0; i < this._indent; i++) {
+          prefix += "  ";
+        }
+        s = prefix + s;
       }
-      this.buffer.push(prefix + s);
-      writer && writer.writeLn(prefix + s);
+      this._buffer.push(s);
+    }
+    writeLns(s: string) {
+      var lines = s.split("\n");
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line.length > 0) {
+          this.writeLn(lines[i]);
+        }
+      }
+    }
+    writeEmitter(emitter: Emitter) {
+      this._buffer.push.apply(this._buffer, emitter._buffer);
     }
     indent() {
       this._indent ++;
@@ -80,10 +176,10 @@ module J2ME {
       this._indent --;
     }
     prependLn(s: string) {
-      this.buffer.unshift(s);
+      this._buffer.unshift(s);
     }
     toString(): string {
-      return this.buffer.join("\n");
+      return this._buffer.join("\n");
     }
   }
 
@@ -96,8 +192,9 @@ module J2ME {
       case Kind.Short:
         return "Int16Array";
       case Kind.Byte:
-      case Kind.Boolean:
         return "Int8Array";
+      case Kind.Boolean:
+        return "Uint8Array";
       case Kind.Float:
         return "Float32Array";
       case Kind.Long:
@@ -139,61 +236,169 @@ module J2ME {
     return "Long.fromInt(" + v + ")";
   }
 
+  function classConstant(classInfo: ClassInfo): string {
+    // PrimitiveArrayClassInfo have custom mangledNames;
+    if (classInfo instanceof PrimitiveArrayClassInfo) {
+      return classInfo.mangledName;
+    }
+    if (classInfo instanceof ArrayClassInfo) {
+      return "AK(" + classConstant(classInfo.elementClass) + ")";
+    }
+    if (classInfo.mangledName) {
+      return classInfo.mangledName;
+    }
+    release || assert(classInfo.mangledName);
+    return classInfo.mangledName;
+  }
+
+  /**
+   * These bytecodes require stack flushing.
+   */
+  function needsStackFlushBefore(opcode: Bytecodes, sp: number) {
+     // Bytecodes that modify the order in which expressions are evaluated, like: SWAP and DUP
+     // must flush the stack.
+    switch (opcode) {
+      case Bytecodes.DUP:
+      case Bytecodes.DUP_X1:
+      case Bytecodes.DUP_X2:
+      case Bytecodes.DUP2:
+      case Bytecodes.DUP2_X1:
+      case Bytecodes.DUP2_X2:
+      case Bytecodes.SWAP:
+        return true;
+    }
+    // IINC can increment something that's on the stack, so we need to flush.
+    if (opcode === Bytecodes.IINC && sp > 0) {
+      return true;
+    }
+    // All other STORE bytecodes can also modify something that's on the stack. However,
+    // since these will pop the stack before the assignment, we only need to care about
+    // cases where sp > 1.
+    if (Bytecode.isStore(opcode) && sp > 1) {
+      return true;
+    }
+    return false;
+  }
+
+  export enum Precedence {
+    Sequence            = 0,  // … , …
+    Assignment          = 3,  // … = …
+    Conditional         = 4,  // … ? … : …
+    LogicalOR           = 5,  // … || …
+    LogicalAND          = 6,  // … && …
+    BitwiseOR           = 7,  // … | …
+    BitwiseXOR          = 8,  // … ^ …
+    BitwiseAND          = 9,  // … & …
+    Equality            = 10, // … == …
+    Relational          = 11, // … < …
+    BitwiseShift        = 12, // … << …
+    Addition            = 13, // … + …
+    Subtraction         = 13, // … - …
+    Multiplication      = 14, // … * …
+    Division            = 14, // … / …
+    Remainder           = 14, // … % …
+    UnaryNegation       = 15, // - …
+    LogicalNOT          = 15, // ! …
+    Postfix             = 16, // … ++
+    Call                = 17, // … ( … )
+    New                 = 18, // new … ( … )
+    Member              = 18, // … . …
+    Primary             = 19
+  }
+
   export class BaselineCompiler {
     sp: number;
     pc: number;
 
-    private emitter: Emitter;
+    private target: CompilationTarget;
+    private bodyEmitter: Emitter;
+    private blockEmitter: Emitter;
     private blockMap: BlockMap;
     private methodInfo: MethodInfo;
     private parameters: string [];
     private hasHandlers: boolean;
+    private hasMonitorEnter: boolean;
     private blockStackHeightMap: number [];
-    private emittedBlocksIDs: boolean [];
     private initializedClasses: any;
     private referencedClasses: ClassInfo [];
     private local: string [];
     private stack: string [];
-    private variables: string [];
+    private blockStack: string [];
+    private blockStackPrecedence: Precedence [];
+    private variables: any;
     private lockObject: string;
+    private hasOSREntryPoint = false;
+    private entryBlock: number;
+    private isPrivileged: boolean;
+
     static localNames = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"];
 
     /**
-     * Make sure that none of these shadow gloal names, like "U".
+     * Make sure that none of these shadow global names, like "U" and "O".
      */
-    static stackNames = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "_U", "V", "W", "X", "Y", "Z"];
+    static stackNames = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "_O", "P", "Q", "R", "S", "T", "_U", "V", "W", "X", "Y", "Z"];
+
+    /**
+     * Indicates whether a unwind throw was emitted.
+     */
+    private hasUnwindThrow: boolean;
 
     constructor(methodInfo: MethodInfo, target: CompilationTarget) {
       this.methodInfo = methodInfo;
       this.local = [];
-      this.variables = [];
+      this.variables = {};
       this.pc = 0;
       this.sp = 0;
       this.stack = [];
+      this.blockStack = [];
+      this.blockStackPrecedence = [];
       this.parameters = [];
       this.referencedClasses = [];
-      this.emittedBlocksIDs = [];
       this.initializedClasses = null;
-      this.hasHandlers = !!methodInfo.exception_table.length;
+      this.hasHandlers = methodInfo.exception_table_length > 0;
+      this.hasMonitorEnter = false;
       this.blockStackHeightMap = [0];
-      this.emitter = new Emitter();
-      this.lockObject = this.methodInfo.isSynchronized ? 
-                          this.methodInfo.isStatic ? this.runtimeClassObject(this.methodInfo.classInfo) : "this"
-                          : "null";
+      this.bodyEmitter = new Emitter(!release);
+      this.blockEmitter = new Emitter(!release);
+      this.target = target;
+      this.hasUnwindThrow = false;
+      this.isPrivileged = isPrivileged(this.methodInfo);
     }
 
     compile(): CompiledMethodInfo {
+      this.blockMap = new BlockMap(this.methodInfo);
+      this.blockMap.build();
+      Relooper.cleanup();
+      Relooper.init();
+
+      var blocks = this.blockMap.blocks;
+      // Create relooper blocks ahead of time so we can add branches in one pass over the bytecode.
+      for (var i = 0; i < blocks.length; i++) {
+        blocks[i].relooperBlockID = Relooper.addBlock("// Block: " + blocks[i].blockID);
+      }
+      this.entryBlock = blocks[0].relooperBlockID;
       this.emitPrologue();
       this.emitBody();
-      if (this.variables.length) {
-        this.emitter.prependLn("var " + this.variables.join(", ") + ";");
+
+      var variables = [];
+      for (var k in this.variables) {
+        if (this.variables[k] !== undefined) {
+          variables.push(k + "=" + this.variables[k]);
+        } else {
+          variables.push(k);
+        }
       }
-      return new CompiledMethodInfo(this.parameters, this.emitter.toString(), this.referencedClasses);
+      if (variables.length > 0) {
+        this.bodyEmitter.prependLn("var " + variables.join(",") + ";");
+      }
+      if (this.hasMonitorEnter) {
+        this.bodyEmitter.prependLn("var th=$.ctx.thread;");
+      }
+      return new CompiledMethodInfo(this.parameters, this.bodyEmitter.toString(), this.referencedClasses, this.hasOSREntryPoint ? this.blockMap.getOSREntryPoints() : []);
     }
-    needsVariable(name: string) {
-      if (this.variables.indexOf(name) < 0) {
-        this.variables.push(name);
-      }
+
+    needsVariable(name: string, value?: string) {
+      this.variables[name] = value;
     }
 
     setSuccessorsBlockStackHeight(block: Block, sp: number) {
@@ -208,93 +413,92 @@ module J2ME {
       }
     }
 
+    // Cache classes known to be initialized as locals.
+    localClassConstant(classInfo: ClassInfo): string {
+      if (classInfo !== this.methodInfo.classInfo) {
+        return classConstant(classInfo);
+      }
+      this.needsVariable("k0", classConstant(classInfo));
+      return "k0";
+    }
+
     emitBody() {
-      var blockMap = this.blockMap = new BlockMap(this.methodInfo);
-      blockMap.build();
+      var blockMap = this.blockMap;
       writer && blockMap.trace(writer);
-      var blocks = blockMap.blocks;
-      var stream = new BytecodeStream(this.methodInfo.code);
+      var stream = new BytecodeStream(this.methodInfo.codeAttribute.code);
 
       var needsTry = this.hasHandlers || this.methodInfo.isSynchronized;
 
-      if (blocks.length === 1 && !needsTry && !blocks[0].isLoopHeader) {
-        this.emitBlockBody(stream, blocks[0]);
-        return;
-      }
-      this.emitter.enter("while (true) {");
-      if (emitCallMethodLoopCounter) {
-        this.emitter.writeLn("J2ME.baselineMethodCounter.count(\"" + this.methodInfo.implKey + "\");");
-      }
-      needsTry && this.emitter.enter("try {");
-      this.emitter.enter("switch (bi) {");
+      // We need a while to loop back to the top and dispatch to the appropriate exception handler.
+      var needsWhile = this.hasHandlers;
 
+      if (emitCallMethodLoopCounter) {
+        this.bodyEmitter.writeLn("J2ME.baselineMethodCounter.count(\"" + this.methodInfo.implKey + "\");");
+      }
+
+      var blocks = blockMap.blocks;
       for (var i = 0; i < blocks.length; i++) {
         var block = blocks[i];
         if (block instanceof ExceptionBlock) {
           continue
         }
-        // Have we already emitted this block?
-        if (this.emittedBlocksIDs[block.blockID]) {
-          continue;
-        }
         if (block.isExceptionEntry) {
           writer && writer.writeLn("block.isExceptionEntry");
           this.setBlockStackHeight(block.startBci, 1);
         }
-        this.emitBlock(stream, block);
-        //if (lastBC !== Bytecodes.ILLEGAL) {
-        //  var needsFallthroughPC = !Bytecode.isBlockEnd(lastBC);
-        //  // Check to see if we can get away without going through the switch again.
-        //  if (i < blocks.length - 1 &&
-        //    block.successors.length === 1 &&
-        //    blocks[i + 1].startBci === stream.currentBCI) {
-        //    needsFallthroughPC = false;
-        //  }
-        //  if (needsFallthroughPC) {
-        //    this.emitter.writeLn("bi = " + this.getBlockIndex(stream.currentBCI) + "; break;");
-        //  }
-        //}
-        this.emitter.outdent();
+        this.blockEmitter.reset();
+        this.emitBlockBody(stream, block);
       }
-      if (emitCompilerAssertions) {
-        this.emitter.enter("default:");
-        this.emitter.writeLn("J2ME.Debug.assert(false, 'Invalid pc.');");
-        this.emitter.outdent();
+
+      if (this.hasUnwindThrow) {
+        needsTry = true;
       }
-      this.emitter.leave("}");
+
+      needsWhile && this.bodyEmitter.enter("while(1){");
+      needsTry && this.bodyEmitter.enter("try{");
+      this.bodyEmitter.writeLn("var label=0;");
+      this.bodyEmitter.writeLns(Relooper.render(this.entryBlock));
+
+      emitCompilerAssertions && this.bodyEmitter.writeLn("J2ME.Debug.assert(false, 'Invalid PC: ' + pc)");
+
       if (needsTry) {
-        this.emitter.leaveAndEnter("} catch (ex) {");
-        this.sp = 0;
-        this.emitPush(Kind.Reference, "$TE(ex)");
+        this.bodyEmitter.leaveAndEnter("}catch(ex){");
+        if (this.hasUnwindThrow) {
+          var local = this.local.join(",");
+          var stack = this.stack.join(",");
+          this.bodyEmitter.writeLn("if(U){$.T(ex,[" + local + "],[" + stack + "]," + this.lockObject + ");return;}");
+        }
+        this.bodyEmitter.writeLn(this.getStackName(0) + "=TE(ex);");
+        this.blockStack = [this.getStackName(0)];
+        this.sp = 1;
         if (this.hasHandlers) {
-          var handlers = this.methodInfo.exception_table;
-          for (var i = 0; i < handlers.length; i++) {
-            this.emitExceptionHandler(handlers[i]);
+          for (var i = 0; i < this.methodInfo.exception_table_length; i++) {
+            this.emitExceptionHandler(this.bodyEmitter, this.methodInfo.getExceptionEntryViewByIndex(i));
           }
         }
         if (this.methodInfo.isSynchronized) {
-          this.emitMonitorExit(this.lockObject);
+          this.emitMonitorExit(this.bodyEmitter, this.lockObject);
         }
-        this.emitter.writeLn("throw " + this.peek(Kind.Reference) + ";");
-        this.emitter.leave("}");
+        this.bodyEmitter.writeLn("throw " + this.peek(Kind.Reference) + ";");
+        this.bodyEmitter.leave("}");
       }
-      this.emitter.leave("}");
+      if (needsWhile) {
+        this.bodyEmitter.leave("}");
+      }
     }
 
-    emitExceptionHandler(handler: ExceptionHandler) {
+    private emitExceptionHandler(emitter: Emitter, handler: ExceptionEntryView) {
       var check = "";
       if (handler.catch_type > 0) {
         var classInfo = this.lookupClass(handler.catch_type);
-        check = "$IOK";
+        check = "IOK";
         if (classInfo.isInterface) {
-          check = "$IOI";
+          check = "IOI";
         }
-        check += "(" + this.peek(Kind.Reference) + ", " +  mangleClass(classInfo) + ")";
-        check = " && " + check;
+        check += "(" + this.peek(Kind.Reference) + "," + this.localClassConstant(classInfo) + ")";
+        check = "&&" + check;
       }
-      this.emitter.enter("if (pc >= " + handler.start_pc + " && pc < " + handler.end_pc + check + ") {");
-      this.emitter.writeLn("bi = " + this.getBlockIndex(handler.handler_pc) + "; continue;");
-      this.emitter.leave("}");
+      this.bodyEmitter.writeLn("if(pc>=" + handler.start_pc + "&&pc<" + handler.end_pc + check + "){pc=" + this.getBlockIndex(handler.handler_pc) + ";continue;}");
       return;
     }
 
@@ -305,17 +509,17 @@ module J2ME {
       this.initializedClasses = Object.create(null);
     }
 
-    emitBlock(stream: BytecodeStream, block: Block) {
-      this.emitter.enter("case " + this.getBlockIndex(block.startBci) + ":");
-      this.emitBlockBody(stream, block);
-    }
-
     emitBlockBody(stream: BytecodeStream, block: Block) {
       this.resetOptimizationState();
       this.sp = this.blockStackHeightMap[block.startBci];
-      emitDebugInfoComments && this.emitter.writeLn("// " + this.blockMap.blockToString(block));
+      this.blockStack = this.stack.slice(0, this.sp);
+      this.blockStackPrecedence = [];
+      for (var i = 0; i < this.sp; i++) {
+        this.blockStackPrecedence.push(Precedence.Primary);
+      }
+      emitDebugInfoComments && this.blockEmitter.writeLn("// " + this.blockMap.blockToString(block));
       writer && writer.writeLn("emitBlock: " + block.startBci + " " + this.sp + " " + block.isExceptionEntry);
-      assert(this.sp !== undefined, "Bad stack height");
+      release || assert(this.sp !== undefined, "Bad stack height");
       stream.setBCI(block.startBci);
       var lastSourceLocation = null;
       var lastBC: Bytecodes;
@@ -325,88 +529,170 @@ module J2ME {
         this.emitBytecode(stream, block);
         stream.next();
       }
-      this.emittedBlocksIDs[block.blockID] = true;
       if (this.sp >= 0) {
+        this.flushBlockStack();
         this.setSuccessorsBlockStackHeight(block, this.sp);
         if (!Bytecode.isBlockEnd(lastBC)) { // Fallthrough.
-          this.emitter.writeLn("bi = " + this.getBlockIndex(stream.currentBCI) + "; break;");
+          Relooper.addBranch(block.relooperBlockID, this.getBlock(stream.currentBCI).relooperBlockID);
         }
       } else {
-        this.emitter.writeLn("break;");
+        // TODO: ...
       }
+      Relooper.setBlockCode(block.relooperBlockID, this.blockEmitter.toString());
     }
 
     private emitPrologue() {
       var local = this.local;
-      var localIndex = 0;
+      var parameterLocalIndex = this.methodInfo.isStatic ? 0 : 1;
 
-      var typeDescriptors = SignatureDescriptor.makeSignatureDescriptor(this.methodInfo.signature).typeDescriptors;
+      var signatureKinds = this.methodInfo.signatureKinds;
 
       // Skip the first typeDescriptor since it is the return type.
-      for (var i = 1; i < typeDescriptors.length; i++) {
-        var kind = Kind.Reference;
-        if (typeDescriptors[i] instanceof AtomicTypeDescriptor) {
-          kind = (<AtomicTypeDescriptor>typeDescriptors[i]).kind;
-        }
-        this.parameters.push(this.getLocalName(localIndex));
-        localIndex += isTwoSlot(kind) ? 2 : 1;
+      for (var i = 1; i < signatureKinds.length; i++) {
+        var kind = signatureKinds[i];
+        this.parameters.push(this.getLocalName(parameterLocalIndex));
+        parameterLocalIndex += isTwoSlot(kind) ? 2 : 1;
       }
 
-      var extraLocal = this.methodInfo.max_locals - (this.methodInfo.isStatic ? 0 : 1);
-      for (var i = 0; i < extraLocal; i++) {
+      var maxLocals = this.methodInfo.codeAttribute.max_locals;
+      for (var i = 0; i < maxLocals; i++) {
         local.push(this.getLocalName(i));
       }
       if (local.length) {
-        this.emitter.writeLn("var " + local.join(", ") + ";");
+        this.bodyEmitter.writeLn("var " + local.join(",") + ";");
       }
       if (!this.methodInfo.isStatic) {
-        local.unshift("this");
+        this.bodyEmitter.writeLn("var ins="+ this.getLocal(0) + "=this;");
       }
-
       var stack = this.stack;
-      for (var i = 0; i < this.methodInfo.max_stack; i++) {
-        stack.push(this.getStack(i));
+      for (var i = 0; i < this.methodInfo.codeAttribute.max_stack; i++) {
+        stack.push(this.getStackName(i));
       }
       if (stack.length) {
-        this.emitter.writeLn("var " + stack.join(", ") + ";");
+        this.bodyEmitter.writeLn("var " + stack.join(",") + ";");
       }
-      this.emitter.writeLn("var pc = 0, bi = 0;");
+      this.bodyEmitter.writeLn("var pc=0;");
       if (this.hasHandlers) {
-        this.emitter.writeLn("var ex;");
+        this.bodyEmitter.writeLn("var ex;");
       }
 
       if (emitCallMethodCounter) {
-        this.emitter.writeLn("J2ME.baselineMethodCounter.count(\"" + this.methodInfo.implKey + "\");");
+        this.bodyEmitter.writeLn("J2ME.baselineMethodCounter.count(\"" + this.methodInfo.implKey + "\");");
       }
 
-      if (this.methodInfo.isSynchronized) {
-        this.emitMonitorEnter(0, this.lockObject);
+      this.lockObject = this.methodInfo.isSynchronized ?
+        this.methodInfo.isStatic ? this.runtimeClassObject(this.methodInfo.classInfo) : "ins"
+        : "null";
+
+      this.emitEntryPoints();
+    }
+
+    private emitEntryPoints() {
+      var needsOSREntryPoint = false;
+      var needsEntryDispatch = false;
+
+      var blockMap = this.blockMap;
+      var blocks = blockMap.blocks;
+      for (var i = 0; i < blocks.length; i++) {
+        var block = blocks[i];
+        if (blockMap.invokeCount > 0 && block.isLoopHeader && !block.isInnerLoopHeader()) {
+          needsOSREntryPoint = true;
+          needsEntryDispatch = true;
+        }
+        if (block.isExceptionEntry) {
+          needsEntryDispatch = true;
+        }
+      }
+
+      if (needsOSREntryPoint) {
+        // Are we doing an OSR?
+        this.bodyEmitter.enter("if(O){");
+        this.bodyEmitter.writeLn("var _=O.local;");
+
+        // Restore locals.
+        var restoreLocals = [];
+        for (var i = 0; i < this.methodInfo.codeAttribute.max_locals; i++) {
+          restoreLocals.push(this.getLocal(i) + "=_[" + i + "]");
+        }
+        this.bodyEmitter.writeLn(restoreLocals.join(",") + ";");
+        this.needsVariable("re");
+        if (!this.methodInfo.isStatic) {
+          this.bodyEmitter.writeLn("ins=O.lockObject;");
+        }
+        this.bodyEmitter.writeLn("pc=O.pc;");
+        this.bodyEmitter.writeLn("O.free();O=null;");
+        if (this.methodInfo.isSynchronized) {
+          this.bodyEmitter.leaveAndEnter("}else{");
+          this.emitMonitorEnter(this.bodyEmitter, 0, this.lockObject);
+        }
+        this.bodyEmitter.leave("}");
+        this.hasOSREntryPoint = true;
+      } else {
+        if (this.methodInfo.isSynchronized) {
+          this.emitMonitorEnter(this.bodyEmitter, 0, this.lockObject);
+        }
+      }
+
+      // Insert a preemption check after the OSR code so the pc
+      // and state will be stored. We can only do this if the
+      // method has the necessary unwinding code.
+      if (canYield(this.methodInfo)) {
+        this.emitPreemptionCheck(this.bodyEmitter, "pc");
+      }
+
+      if (needsEntryDispatch) {
+        var entryBlock = Relooper.addBlock("// Entry Dispatch Block");
+
+        // Add entry points
+        var blocks = this.blockMap.blocks;
+        for (var i = 0; i < blocks.length; i++) {
+          var block = blocks[i];
+          if (i === 0 || // First block always gets a entry point.
+              (block.isLoopHeader && !block.isInnerLoopHeader()) || // Outer loop headers need entry points so we can OSR.
+              block.isExceptionEntry) {
+            Relooper.addBranch(entryBlock, block.relooperBlockID, "pc===" + block.startBci);
+          }
+        }
+
+        // Add invalid block.
+        var osrInvalidBlock = Relooper.addBlock(emitCompilerAssertions ? "J2ME.Debug.assert(false, 'Invalid OSR PC: ' + pc)" : "");
+        Relooper.addBranch(entryBlock, osrInvalidBlock);
+
+        this.entryBlock = entryBlock;
       }
     }
 
     lookupClass(cpi: number): ClassInfo {
-      var classInfo = this.methodInfo.classInfo.resolve(cpi, false);
+      var classInfo = this.methodInfo.classInfo.constantPool.resolveClass(cpi);
       ArrayUtilities.pushUnique(this.referencedClasses, classInfo);
       return classInfo;
     }
 
     lookupMethod(cpi: number, opcode: Bytecodes, isStatic: boolean): MethodInfo {
-      var methodInfo = this.methodInfo.classInfo.resolve(cpi, isStatic);
+      var methodInfo = this.methodInfo.classInfo.constantPool.resolveMethod(cpi, isStatic);
       ArrayUtilities.pushUnique(this.referencedClasses, methodInfo.classInfo);
       return methodInfo;
     }
 
     lookupField(cpi: number, opcode: Bytecodes, isStatic: boolean): FieldInfo {
-      var fieldInfo = this.methodInfo.classInfo.resolve(cpi, isStatic);
+      var fieldInfo = this.methodInfo.classInfo.constantPool.resolveField(cpi, isStatic);
       ArrayUtilities.pushUnique(this.referencedClasses, fieldInfo.classInfo);
       return fieldInfo;
     }
 
-    getStack(i: number): string {
+    getStackName(i: number): string {
       if (i >= BaselineCompiler.stackNames.length) {
         return "s" + (i - BaselineCompiler.stackNames.length);
       }
       return BaselineCompiler.stackNames[i];
+    }
+
+    getStack(i: number, contextPrecedence: Precedence): string {
+      var v = this.blockStack[i];
+      if (this.blockStackPrecedence[i] < contextPrecedence) {
+        v = "(" + v + ")";
+      }
+      return v;
     }
 
     getLocalName(i: number): string {
@@ -424,19 +710,19 @@ module J2ME {
     }
 
     emitLoadLocal(kind: Kind, i: number) {
-      this.emitPush(kind, this.getLocal(i));
+      this.emitPush(kind, this.getLocal(i), Precedence.Primary);
     }
 
     emitStoreLocal(kind: Kind, i: number) {
-      this.emitter.writeLn(this.getLocal(i) + " = " + this.pop(kind) + ";");
+      this.blockEmitter.writeLn(this.getLocal(i) + "=" + this.pop(kind, Precedence.Sequence) + ";");
     }
 
     peekAny(): string {
       return this.peek(Kind.Void);
     }
 
-    peek(kind: Kind): string {
-      return this.getStack(this.sp - 1);
+    peek(kind: Kind, precedence: Precedence = Precedence.Sequence): string {
+      return this.getStack(this.sp - 1, precedence);
     }
 
     popAny(): string {
@@ -445,63 +731,90 @@ module J2ME {
 
     emitPopTemporaries(n: number) {
       for (var i = 0; i < n; i++) {
-        this.emitter.writeLn("var t" + i + " = " + this.pop(Kind.Void) + ";");
+        this.blockEmitter.writeLn("var t" + i + "=" + this.pop(Kind.Void) + ";");
       }
     }
 
     emitPushTemporary(...indices: number []) {
       for (var i = 0; i < indices.length; i++) {
-       this.emitPush(Kind.Void, "t" + indices[i]);
+       this.emitPush(Kind.Void, "t" + indices[i], Precedence.Primary);
       }
     }
 
-    pop(kind: Kind): string {
+    pop(kind: Kind, contextPrecedence: Precedence = Precedence.Primary): string {
       writer && writer.writeLn(" popping: sp: " + this.sp + " " + Kind[kind]);
-      assert (this.sp, "SP below zero.");
+      release || assert (this.sp, "SP below zero.");
       this.sp -= isTwoSlot(kind) ? 2 : 1;
-      var v = this.getStack(this.sp);
+      var v = this.getStack(this.sp, contextPrecedence);
       writer && writer.writeLn("  popped: sp: " + this.sp + " " + Kind[kind] + " " + v);
       return v;
     }
 
     emitPushAny(v) {
-      this.emitPush(Kind.Void, v);
+      this.emitPush(Kind.Void, v, Precedence.Sequence); // TODO: Revisit precedence.
     }
 
-    emitPush(kind: Kind, v) {
+    emitPushInteger(v) {
+      if (v < 0) {
+        this.emitPush(Kind.Int, v, Precedence.UnaryNegation);
+      } else {
+        this.emitPush(Kind.Int, v, Precedence.Primary);
+      }
+    }
+    
+    emitPush(kind: Kind, v, precedence: Precedence) {
       writer && writer.writeLn("push: sp: " + this.sp + " " + Kind[kind] + " " + v);
-      this.emitter.writeLn(this.getStack(this.sp) + " = " + v + ";");
+      // this.blockEmitter.writeLn(this.getStack(this.sp) + " = " + v + ";");
+      this.blockStack[this.sp] = v;
+      this.blockStackPrecedence[this.sp] = precedence;
       this.sp += isTwoSlot(kind) ? 2 : 1;
+    }
+
+    flushBlockStack() {
+      for (var i = 0; i < this.sp; i++) {
+        var name = this.getStackName(i);
+        if (name !== this.blockStack[i]) {
+          this.blockEmitter.writeLn(name + "=" + this.blockStack[i] + ";");
+          this.blockStack[i] = name;
+          this.blockStackPrecedence[i] = Precedence.Primary;
+        }
+      }
     }
 
     emitReturn(kind: Kind) {
       if (this.methodInfo.isSynchronized) {
-        this.emitMonitorExit(this.lockObject);
+        this.emitMonitorExit(this.blockEmitter, this.lockObject);
       }
       if (kind === Kind.Void) {
-        this.emitter.writeLn("return;");
+        this.blockEmitter.writeLn("return;");
         return
       }
-      this.emitter.writeLn("return " + this.pop(kind) + ";");
+      this.blockEmitter.writeLn("return " + this.pop(kind) + ";");
     }
 
     emitGetField(fieldInfo: FieldInfo, isStatic: boolean) {
-      var signature = TypeDescriptor.makeTypeDescriptor(fieldInfo.signature);
+      if (isStatic) {
+        this.emitClassInitializationCheck(fieldInfo.classInfo);
+      }
+      var kind = getSignatureKind(fieldInfo.utf8Signature);
       var object = isStatic ? this.runtimeClass(fieldInfo.classInfo) : this.pop(Kind.Reference);
-      this.emitPush(signature.kind, object + "." + fieldInfo.mangledName);
+      this.emitPush(kind, object + "." + fieldInfo.mangledName, Precedence.Member);
     }
 
     emitPutField(fieldInfo: FieldInfo, isStatic: boolean) {
-      var signature = TypeDescriptor.makeTypeDescriptor(fieldInfo.signature);
-      var value = this.pop(signature.kind);
+      if (isStatic) {
+        this.emitClassInitializationCheck(fieldInfo.classInfo);
+      }
+      var kind = getSignatureKind(fieldInfo.utf8Signature);
+      var value = this.pop(kind, Precedence.Sequence);
       var object = isStatic ? this.runtimeClass(fieldInfo.classInfo) : this.pop(Kind.Reference);
-      this.emitter.writeLn(object + "." + fieldInfo.mangledName + " = " + value + ";");
+      this.blockEmitter.writeLn(object + "." + fieldInfo.mangledName + "=" + value + ";");
     }
 
     setBlockStackHeight(pc: number, height: number) {
       writer && writer.writeLn("Setting Block Height " + pc + " " + height);
       if (this.blockStackHeightMap[pc] !== undefined) {
-        assert(this.blockStackHeightMap[pc] === height, pc + " " + this.blockStackHeightMap[pc] + " " + height);
+        release || assert(this.blockStackHeightMap[pc] === height, pc + " " + this.blockStackHeightMap[pc] + " " + height);
       }
       this.blockStackHeightMap[pc] = height;
     }
@@ -509,81 +822,66 @@ module J2ME {
     emitIf(block: Block, stream: BytecodeStream, predicate: string) {
       var nextBlock = this.getBlock(stream.nextBCI);
       var targetBlock = this.getBlock(stream.readBranchDest());
-
-      var next = nextBlock.blockID;
-      var target = targetBlock.blockID;
-
-
-      if (optimizeControlFlow &&
-          block !== nextBlock &&
-          block !== targetBlock &&
-          nextBlock.numberOfPredecessors === 1 &&
-          targetBlock.numberOfPredecessors === 1) {
-        this.setBlockStackHeight(nextBlock.startBci, this.sp);
-        this.setBlockStackHeight(targetBlock.startBci, this.sp);
-        emitDebugInfoComments && this.emitter.writeLn("// " + "Optimized Fork Control Flow");
-        this.emitter.enter("if (" + predicate + ") {");
-        this.emitBlockBody(stream, targetBlock);
-        this.emitter.leaveAndEnter("} else {");
-        this.emitBlockBody(stream, nextBlock);
-        this.emitter.leave("}");
-        this.sp = -1; // We don't have a valid SP here anymore.
-      } else {
-        this.emitter.writeLn("bi = " + predicate + " ? " + target + " : " + next + "; break;");
+      Relooper.addBranch(block.relooperBlockID, nextBlock.relooperBlockID);
+      if (targetBlock !== nextBlock) {
+        Relooper.addBranch(block.relooperBlockID, targetBlock.relooperBlockID, predicate);
       }
     }
 
     emitIfNull(block: Block, stream: BytecodeStream, condition: Condition) {
       var x = this.pop(Kind.Reference);
-      this.emitIf(block, stream, x + " " + conditionToOperator(condition) + " null");
+      this.emitIf(block, stream, x + conditionToOperator(condition) + "null");
     }
 
     emitIfSame(block: Block, stream: BytecodeStream, kind: Kind, condition: Condition) {
       var y = this.pop(kind);
       var x = this.pop(kind);
-      this.emitIf(block, stream, x + " " + conditionToOperator(condition) + " " + y);
+      this.emitIf(block, stream, x + conditionToOperator(condition) + y);
     }
 
     emitIfZero(block: Block, stream: BytecodeStream, condition: Condition) {
-      var x = this.pop(Kind.Int);
-      this.emitIf(block, stream, x + " " + conditionToOperator(condition) + " 0");
+      var x = this.pop(Kind.Int, Precedence.Relational);
+      this.emitIf(block, stream, x + conditionToOperator(condition) + "0");
     }
 
     runtimeClass(classInfo: ClassInfo) {
-      return "$." + mangleClass(classInfo);
+      return "$." + classConstant(classInfo);
     }
 
     runtimeClassObject(classInfo: ClassInfo) {
-      return "$." + mangleClass(classInfo) + ".classObject";
+      return "$." + classConstant(classInfo) + ".classObject";
     }
 
     emitClassInitializationCheck(classInfo: ClassInfo) {
-      while (classInfo.isArrayClass) {
-        classInfo = classInfo.elementClass;
+      while (classInfo instanceof ArrayClassInfo) {
+        classInfo = (<ArrayClassInfo>classInfo).elementClass;
       }
       if (!CLASSES.isPreInitializedClass(classInfo)) {
-        if (this.initializedClasses[classInfo.className]) {
-          var message = "Optimized ClassInitializationCheck: " + classInfo.className + ", block redundant.";
-          emitDebugInfoComments && this.emitter.writeLn("// " + message);
+        if (this.target === CompilationTarget.Runtime && $.initialized[classInfo.getClassNameSlow()]) {
+          var message = "Optimized ClassInitializationCheck: " + classInfo.getClassNameSlow() + ", is already initialized.";
+          baselineCounter && baselineCounter.count(message);
+        } else if (this.initializedClasses[classInfo.getClassNameSlow()]) {
+          var message = "Optimized ClassInitializationCheck: " + classInfo.getClassNameSlow() + ", block redundant.";
+          emitDebugInfoComments && this.blockEmitter.writeLn("// " + message);
           baselineCounter && baselineCounter.count(message);
         } else if (classInfo === this.methodInfo.classInfo) {
-          var message = "Optimized ClassInitializationCheck: " + classInfo.className + ", self access.";
-          emitDebugInfoComments && this.emitter.writeLn("// " + message);
+          var message = "Optimized ClassInitializationCheck: " + classInfo.getClassNameSlow() + ", self access.";
+          emitDebugInfoComments && this.blockEmitter.writeLn("// " + message);
           baselineCounter && baselineCounter.count(message);
-        } else if (this.methodInfo.classInfo.isAssignableTo(classInfo)) {
-          var message = "Optimized ClassInitializationCheck: " + classInfo.className + ", base access.";
-          emitDebugInfoComments && this.emitter.writeLn("// " + message);
+        } else if (!classInfo.isInterface && this.methodInfo.classInfo.isAssignableTo(classInfo)) {
+          var message = "Optimized ClassInitializationCheck: " + classInfo.getClassNameSlow() + ", base access.";
+          emitDebugInfoComments && this.blockEmitter.writeLn("// " + message);
           baselineCounter && baselineCounter.count(message);
         } else {
-          baselineCounter && baselineCounter.count("ClassInitializationCheck: " + classInfo.className);
-          this.emitter.writeLn(this.runtimeClass(classInfo) + ";");
-          if (classInfo.staticInitializer && canYield(classInfo.staticInitializer)) {
-            this.emitUnwind(this.pc, this.pc);
+          baselineCounter && baselineCounter.count("ClassInitializationCheck: " + classInfo.getClassNameSlow());
+          this.blockEmitter.writeLn("if($.initialized[\"" + classInfo.getClassNameSlow() + "\"]===undefined)" + this.runtimeClassObject(classInfo) + ".initialize();");
+          if (canStaticInitializerYield(classInfo)) {
+            this.emitUnwind(this.blockEmitter, String(this.pc), String(this.pc));
           } else {
             emitCompilerAssertions && this.emitNoUnwindAssertion();
           }
         }
-        this.initializedClasses[classInfo.className] = true;
+        this.initializedClasses[classInfo.getClassNameSlow()] = true;
       }
     }
 
@@ -595,154 +893,252 @@ module J2ME {
       if (opcode === Bytecodes.INVOKESTATIC) {
         this.emitClassInitializationCheck(methodInfo.classInfo);
       }
-      var signature = SignatureDescriptor.makeSignatureDescriptor(methodInfo.signature);
-      var types = signature.typeDescriptors;
+
+      var signatureKinds = methodInfo.signatureKinds;
       var args: string [] = [];
-      for (var i = types.length - 1; i > 0; i--) {
-        args.unshift(this.pop(types[i].kind));
+      for (var i = signatureKinds.length - 1; i > 0; i--) {
+        args.unshift(this.pop(signatureKinds[i]));
       }
       var object = null, call;
+      var classConstant = this.localClassConstant(methodInfo.classInfo);
+      var methodConstant = "(" + classConstant + ".M[" + methodInfo.index + "]||" + classConstant + ".m(" + methodInfo.index + "))";
       if (opcode !== Bytecodes.INVOKESTATIC) {
         object = this.pop(Kind.Reference);
         if (opcode === Bytecodes.INVOKESPECIAL) {
           args.unshift(object);
-          call = mangleClassAndMethod(methodInfo) + ".call(" + args.join(", ") + ")";
+          call = methodConstant + ".call(" + args.join(",") + ")";
+        } else if (opcode === Bytecodes.INVOKEVIRTUAL) {
+          call = object + "." + methodInfo.virtualName + "(" + args.join(",") + ")";
+        } else if (opcode === Bytecodes.INVOKEINTERFACE) {
+          call = object + "." + methodInfo.mangledName + "(" + args.join(",") + ")";
         } else {
-          call = object + "." + mangleMethod(methodInfo) + "(" + args.join(", ") + ")";
+          Debug.unexpected(Bytecodes[opcode]);
         }
       } else {
-        call = mangleClassAndMethod(methodInfo) + "(" + args.join(", ") + ")";
+        call = methodConstant + "(" + args.join(",") + ")";
+      }
+      if (methodInfo.implKey in inlineMethods) {
+        emitDebugInfoComments && this.blockEmitter.writeLn("// Inlining: " + methodInfo.implKey);
+        call = inlineMethods[methodInfo.implKey];
       }
       this.needsVariable("re");
-      this.emitter.writeLn("re = " + call + ";");
+      this.flushBlockStack();
+      this.blockEmitter.writeLn("re=" + call + ";");
       if (calleeCanYield) {
-        this.emitUnwind(this.pc, nextPC);
+        this.emitUnwind(this.blockEmitter, String(this.pc), String(nextPC));
       } else {
+        emitCompilerAssertions && this.emitUndefinedReturnAssertion();
         emitCompilerAssertions && this.emitNoUnwindAssertion();
       }
-      if (types[0].kind !== Kind.Void) {
-        this.emitPush(types[0].kind, "re");
+      if (signatureKinds[0] !== Kind.Void) {
+        this.emitPush(signatureKinds[0], "re", Precedence.Primary);
       }
+    }
+
+    emitNegativeArraySizeCheck(length: string) {
+      if (this.isPrivileged) {
+        return;
+      }
+      this.blockEmitter.writeLn(length + "<0&&TN();");
+    }
+
+    emitBoundsCheck(array: string, index: string) {
+      if (this.isPrivileged || !emitCheckArrayBounds) {
+        return;
+      }
+      if (inlineRuntimeCalls) {
+        this.blockEmitter.writeLn("if((" + index + " >>> 0)>=(" + array + ".length >>> 0))TI(" + index + ");");
+      } else {
+        this.blockEmitter.writeLn("CAB(" + array + "," + index + ");");
+      }
+    }
+
+    emitArrayStoreCheck(array: string, value: string) {
+      if (this.isPrivileged || !emitCheckArrayStore) {
+        return;
+      }
+      this.blockEmitter.writeLn("CAS(" + array + "," + value + ");");
     }
 
     emitStoreIndexed(kind: Kind) {
-      var value = this.pop(stackKind(kind));
-      var index = this.pop(Kind.Int);
-      var array = this.pop(Kind.Reference);
-      this.emitter.writeLn("$CAB(" + array + ", " + index + ");");
+      var value = this.pop(stackKind(kind), Precedence.Sequence);
+      var index = this.pop(Kind.Int, Precedence.Sequence);
+      var array = this.pop(Kind.Reference, Precedence.Sequence);
+      this.emitBoundsCheck(array, index);
       if (kind === Kind.Reference) {
-        this.emitter.writeLn("$CAS(" + array + ", " + value + ");");
+        this.emitArrayStoreCheck(array, value);
       }
-      this.emitter.writeLn(array + "[" + index + "] = " + value + ";");
+      this.blockEmitter.writeLn(array + "[" + index + "]=" + value + ";");
     }
 
     emitLoadIndexed(kind: Kind) {
-      var index = this.pop(Kind.Int);
-      var array = this.pop(Kind.Reference);
-      this.emitter.writeLn("$CAB(" + array + ", " + index + ");");
-      this.emitPush(kind, array + "[" + index + "]");
+      var index = this.pop(Kind.Int, Precedence.Sequence);
+      var array = this.pop(Kind.Reference, Precedence.Sequence);
+      this.emitBoundsCheck(array, index);
+      this.emitPush(kind, array + "[" + index + "]", Precedence.Member);
     }
 
     emitIncrement(stream: BytecodeStream) {
-      this.emitter.writeLn(this.getLocal(stream.readLocalIndex()) + " += " + stream.readIncrement() + ";");
+      this.blockEmitter.writeLn(this.getLocal(stream.readLocalIndex()) + "+=" + stream.readIncrement() + ";");
     }
 
-    emitGoto(stream: BytecodeStream) {
-      var target = this.getBlockIndex(stream.readBranchDest());
-      this.emitter.writeLn("bi = " + target + "; break;");
+    emitGoto(block: Block, stream: BytecodeStream) {
+      var targetBCI = stream.readBranchDest();
+      var targetBlock = this.getBlock(targetBCI);
+      Relooper.addBranch(block.relooperBlockID, targetBlock.relooperBlockID);
     }
 
     emitLoadConstant(cpi: number) {
-      var cp = this.methodInfo.classInfo.constant_pool;
-      var entry = cp[cpi];
-      switch (entry.tag) {
+      var cp = this.methodInfo.classInfo.constantPool;
+      var tag = cp.getConstantTag(cpi);
+
+      switch (tag) {
         case TAGS.CONSTANT_Integer:
-          this.emitPush(Kind.Int, entry.integer);
+          this.emitPushInteger(cp.resolve(cpi, tag));
           return;
         case TAGS.CONSTANT_Float:
-          this.emitPush(Kind.Float, doubleConstant(entry.float));
+          var value = cp.resolve(cpi, tag);
+          this.emitPush(Kind.Float, doubleConstant(value), (1 / value) < 0 ? Precedence.UnaryNegation : Precedence.Primary);
           return;
         case TAGS.CONSTANT_Double:
-          this.emitPush(Kind.Double, doubleConstant(entry.double));
+          var value = cp.resolve(cpi, tag);
+          this.emitPush(Kind.Double, doubleConstant(value), (1 / value) < 0 ? Precedence.UnaryNegation : Precedence.Primary);
           return;
         case TAGS.CONSTANT_Long:
-          this.emitPush(Kind.Long, "Long.fromBits(" + entry.lowBits + ", " + entry.highBits + ")");
+          var long = cp.resolve(cpi, tag);
+          this.emitPush(Kind.Long, "Long.fromBits(" + long.getLowBits() + "," + long.getHighBits() + ")", Precedence.Primary);
           return;
         case TAGS.CONSTANT_String:
-          entry = cp[entry.string_index];
-          this.emitPush(Kind.Reference, "$S(" + J2ME.C4.AST.escapeString(entry.bytes) + ")");
+          this.emitPush(Kind.Reference, this.localClassConstant(this.methodInfo.classInfo) + ".c(" + cpi + ")", Precedence.Primary);
           return;
         default:
-          throw "Not done for: " + entry.tag;
+          throw "Not done for: " + TAGS[tag];
       }
     }
 
     emitThrow(pc: number) {
       var object = this.peek(Kind.Reference);
-      this.emitter.writeLn("throw " + object + ";");
+      this.blockEmitter.writeLn("throw " + object + ";");
     }
 
     emitNewInstance(cpi: number) {
       var classInfo = this.lookupClass(cpi);
       this.emitClassInitializationCheck(classInfo);
-      this.emitPush(Kind.Reference, "new " + mangleClass(classInfo)+ "()");
+      this.emitPush(Kind.Reference, "new " + this.localClassConstant(classInfo)+ "()", Precedence.New);
     }
 
     emitNewTypeArray(typeCode: number) {
       var kind = arrayTypeCodeToKind(typeCode);
       var length = this.pop(Kind.Int);
-      this.emitPush(Kind.Reference, "new " + kindToTypedArrayName(kind) + "(" + length + ")");
+      this.emitNegativeArraySizeCheck(length);
+      this.emitPush(Kind.Reference, "new " + kindToTypedArrayName(kind) + "(" + length + ")", Precedence.New);
     }
 
     emitCheckCast(cpi: number) {
       var object = this.peek(Kind.Reference);
-      var classInfo = this.lookupClass(cpi);
-      var call = "$CCK";
-      if (classInfo.isInterface) {
-        call = "$CCI";
+      if (this.isPrivileged) {
+        return;
       }
-      this.emitter.writeLn(call + "(" + object + ", " + mangleClass(classInfo) + ");");
+      var classInfo = this.lookupClass(cpi);
+      var call = "CCK";
+      if (classInfo.isInterface) {
+        call = "CCI";
+      }
+      var classConstant = this.localClassConstant(classInfo);
+      call = call + "(" + object + "," + classConstant + ")"
+      if (inlineRuntimeCalls) {
+        this.blockEmitter.writeLn("(!" + object + ")||" + object + ".klass===" + classConstant + "||" + call + ";");
+      } else {
+        this.blockEmitter.writeLn(call + ";");
+      }
     }
 
     emitInstanceOf(cpi: number) {
       var object = this.pop(Kind.Reference);
       var classInfo = this.lookupClass(cpi);
-      var call = "$IOK";
+      var call = "IOK";
       if (classInfo.isInterface) {
-        call = "$IOI";
+        call = "IOI";
       }
-      this.emitPush(Kind.Int, call + "(" + object + ", " + mangleClass(classInfo) + ") | 0");
+      var classConstant = this.localClassConstant(classInfo);
+      call = call + "(" + object + "," + classConstant + ")|0";
+      if (inlineRuntimeCalls) {
+        call = "((" + object + "&&" + object + ".klass===" + classConstant + ")||" + call + ")|0";
+      }
+      this.emitPush(Kind.Int, call, Precedence.BitwiseOR);
     }
 
     emitArrayLength() {
-      this.emitPush(Kind.Int, this.pop(Kind.Reference) + ".length");
+      this.emitPush(Kind.Int, this.pop(Kind.Reference) + ".length", Precedence.Member);
     }
 
     emitNewObjectArray(cpi: number) {
       var classInfo = this.lookupClass(cpi);
       this.emitClassInitializationCheck(classInfo);
       var length = this.pop(Kind.Int);
-      this.emitPush(Kind.Reference, "$NA(" + mangleClass(classInfo) + ", " + length + ")");
+      this.emitNegativeArraySizeCheck(length);
+      this.emitPush(Kind.Reference, "NA(" + this.localClassConstant(classInfo) + "," + length + ")", Precedence.Call);
     }
 
-    emitUnwind(pc: number, nextPC: number) {
-      var local = this.local.join(", ");
-      var stack = this.stack.slice(0, this.sp).join(", ");
-      this.emitter.writeLn("if (U) { $.B(" + pc + ", " + nextPC + ", [" + local + "], [" + stack + "], " + this.lockObject + "); return; }");
+    emitNewMultiObjectArray(cpi: number, stream: BytecodeStream) {
+      var classInfo = this.lookupClass(cpi);
+      var numDimensions = stream.readUByte(stream.currentBCI + 3);
+      var dimensions = new Array(numDimensions);
+      for (var i = numDimensions - 1; i >= 0; i--) {
+        dimensions[i] = this.pop(Kind.Int);
+      }
+      this.emitPush(Kind.Reference, "NM(" + this.localClassConstant(classInfo) + ",[" + dimensions.join(",") + "])", Precedence.Call);
+    }
+
+    private emitUnwind(emitter: Emitter, pc: string, nextPC: string, forceInline: boolean = false) {
+      // Only emit unwind throws if it saves on code size.
+      if (!forceInline && this.blockMap.invokeCount > 2 &&
+          this.stack.length < 8) {
+        this.flushBlockStack();
+        if (<any>nextPC - <any>pc === 3) {
+          emitter.writeLn("U&&B" + this.sp + "(" + pc + ");");
+        } else {
+          emitter.writeLn("U&&B" + this.sp + "(" + pc + "," + nextPC + ");");
+        }
+        this.hasUnwindThrow = true;
+      } else {
+        var local = this.local.join(",");
+        var stack = this.blockStack.slice(0, this.sp).join(",");
+        emitter.writeLn("if(U){$.B(" + pc + "," + nextPC + ",[" + local + "],[" + stack + "]," + this.lockObject + ");return;}");
+      }
       baselineCounter && baselineCounter.count("emitUnwind");
     }
 
     emitNoUnwindAssertion() {
-      this.emitter.writeLn("if (U) { J2ME.Debug.assert(false, 'Unexpected unwind.'); }");
+      this.blockEmitter.writeLn("if(U){J2ME.Debug.assert(false,'Unexpected unwind.');}");
     }
 
-    emitMonitorEnter(nextPC: number, object: string) {
-      this.emitter.writeLn("$ME(" + object + ");");
-      this.emitUnwind(this.pc, nextPC);
+    emitUndefinedReturnAssertion() {
+      this.blockEmitter.writeLn("if (U && re !== undefined) { J2ME.Debug.assert(false, 'Unexpected return value during unwind.'); }");
     }
 
-    emitMonitorExit(object: string) {
-      this.emitter.writeLn("$MX(" + object + ");");
+    private emitMonitorEnter(emitter: Emitter, nextPC: number, object: string) {
+      this.hasMonitorEnter = true;
+
+      this.needsVariable("lk");
+      emitter.writeLn("lk=" + object + "._lock;");
+      emitter.enter("if(lk&&lk.level===0){lk.thread=th;lk.level=1;}else{ME(" + object + ");");
+      this.emitUnwind(emitter, String(this.pc), String(nextPC), true);
+      emitter.leave("}");
+    }
+
+    private emitPreemptionCheck(emitter: Emitter, nextPC: string) {
+      if (!emitCheckPreemption || this.methodInfo.implKey in noPreemptMap) {
+        return;
+      }
+      emitter.writeLn("PS++;");
+      emitter.writeLn("if((PS&" + preemptionSampleMask + ")===0)PE();");
+      this.emitUnwind(emitter, String(nextPC), String(nextPC), true);
+    }
+
+    private emitMonitorExit(emitter: Emitter, object: string) {
+      emitter.writeLn("lk=" + object + "._lock;");
+      emitter.writeLn("if(lk.level===1&&lk.ready.length===0)lk.level=0;else MX(" + object + ");");
     }
 
     emitStackOp(opcode: Bytecodes) {
@@ -794,27 +1190,38 @@ module J2ME {
           Debug.unexpected(Bytecodes[opcode]);
       }
     }
-    
+
+    emitDivideByZeroCheck(kind: Kind, value: string) {
+      if (this.isPrivileged) {
+        return;
+      }
+      if (inlineRuntimeCalls && kind !== Kind.Long) {
+        this.blockEmitter.writeLn(value + "===0&&TA();");
+      } else {
+        var checkName = kind === Kind.Long ? "CDZL" : "CDZ";
+        this.blockEmitter.writeLn(checkName + "(" + value + ");");
+      }
+    }
+
     emitArithmeticOp(result: Kind, opcode: Bytecodes, canTrap: boolean) {
       var y = this.pop(result);
       var x = this.pop(result);
       if (canTrap) {
-        var checkName = result === Kind.Long ? "$CDZL" : "$CDZ";
-        this.emitter.writeLn(checkName + "(" + y + ");");
+        this.emitDivideByZeroCheck(result, y);
       }
       var v;
       switch(opcode) {
-        case Bytecodes.IADD: v = x + " + " + y + " | 0"; break;
-        case Bytecodes.ISUB: v = x + " - " + y + " | 0"; break;
-        case Bytecodes.IMUL: v = "Math.imul(" + x + ", " + y + ")"; break;
-        case Bytecodes.IDIV: v = x + " / " + y + " | 0"; break;
-        case Bytecodes.IREM: v = x + " % " + y; break;
+        case Bytecodes.IADD: v = x + "+" + y + "|0"; break;
+        case Bytecodes.ISUB: v = x + "-" + y + "|0"; break;
+        case Bytecodes.IMUL: v = "Math.imul(" + x + "," + y + ")"; break;
+        case Bytecodes.IDIV: v = x + "/" + y + "|0"; break;
+        case Bytecodes.IREM: v = x + "%" + y; break;
 
-        case Bytecodes.FADD: v = "Math.fround(" + x + " + " + y + ")"; break;
-        case Bytecodes.FSUB: v = "Math.fround(" + x + " - " + y + ")"; break;
-        case Bytecodes.FMUL: v = "Math.fround(" + x + " * " + y + ")"; break;
-        case Bytecodes.FDIV: v = "Math.fround(" + x + " / " + y + ")"; break;
-        case Bytecodes.FREM: v = "Math.fround(" + x + " % " + y + ")"; break;
+        case Bytecodes.FADD: v = "Math.fround(" + x + "+" + y + ")"; break;
+        case Bytecodes.FSUB: v = "Math.fround(" + x + "-" + y + ")"; break;
+        case Bytecodes.FMUL: v = "Math.fround(" + x + "*" + y + ")"; break;
+        case Bytecodes.FDIV: v = "Math.fround(" + x + "/" + y + ")"; break;
+        case Bytecodes.FREM: v = "Math.fround(" + x + "%" + y + ")"; break;
 
         case Bytecodes.LADD: v = x + ".add(" + y + ")"; break;
         case Bytecodes.LSUB: v = y + ".negate().add(" + x + ")"; break;
@@ -822,29 +1229,29 @@ module J2ME {
         case Bytecodes.LDIV: v = x + ".div(" + y + ")"; break;
         case Bytecodes.LREM: v = x + ".modulo(" + y + ")"; break;
 
-        case Bytecodes.DADD: v = x + " + " + y; break;
-        case Bytecodes.DSUB: v = x + " - " + y; break;
-        case Bytecodes.DMUL: v = x + " * " + y; break;
-        case Bytecodes.DDIV: v = x + " / " + y; break;
-        case Bytecodes.DREM: v = x + " % " + y; break;
+        case Bytecodes.DADD: v = x + "+" + y; break;
+        case Bytecodes.DSUB: v = x + "-" + y; break;
+        case Bytecodes.DMUL: v = x + "*" + y; break;
+        case Bytecodes.DDIV: v = x + "/" + y; break;
+        case Bytecodes.DREM: v = x + "%" + y; break;
         default:
-          assert(false, Bytecodes[opcode]);
+          release || assert(false, Bytecodes[opcode]);
       }
-      this.emitPush(result, v);
+      this.emitPush(result, v, Precedence.Sequence); // TODO: Restrict precedence.
     }
 
     emitNegateOp(kind: Kind) {
       var x = this.pop(kind);
       switch(kind) {
         case Kind.Int:
-          this.emitPush(kind, "(- " + x + ")|0");
+          this.emitPush(kind, "(- " + x + ")|0", Precedence.BitwiseOR);
           break;
         case Kind.Long:
-          this.emitPush(kind, x + ".negate()");
+          this.emitPush(kind, x + ".negate()", Precedence.Member); // TODO: Or is it call?
           break;
         case Kind.Float:
         case Kind.Double:
-          this.emitPush(kind, "- " + x);
+          this.emitPush(kind, "- " + x, Precedence.UnaryNegation);
           break;
         default:
           Debug.unexpected(Kind[kind]);
@@ -856,9 +1263,9 @@ module J2ME {
       var x = this.pop(kind);
       var v;
       switch(opcode) {
-        case Bytecodes.ISHL: v = x + " << " + s; break;
-        case Bytecodes.ISHR: v = x + " >> " + s; break;
-        case Bytecodes.IUSHR: v = x + " >>> " + s; break;
+        case Bytecodes.ISHL:  this.emitPush(kind, x + "<<"  + s, Precedence.BitwiseShift); return;
+        case Bytecodes.ISHR:  this.emitPush(kind, x + ">>"  + s, Precedence.BitwiseShift); return;
+        case Bytecodes.IUSHR: this.emitPush(kind, x + ">>>" + s, Precedence.BitwiseShift); return;
 
         case Bytecodes.LSHL: v = x + ".shiftLeft(" + s + ")"; break;
         case Bytecodes.LSHR: v = x + ".shiftRight(" + s + ")"; break;
@@ -866,7 +1273,7 @@ module J2ME {
         default:
           Debug.unexpected(Bytecodes[opcode]);
       }
-      this.emitPush(kind, v);
+      this.emitPush(kind, v, Precedence.Call);
     }
 
     emitLogicOp(kind: Kind, opcode: Bytecodes) {
@@ -874,17 +1281,17 @@ module J2ME {
       var x = this.pop(kind);
       var v;
       switch(opcode) {
-        case Bytecodes.IAND: v = x + " & " + y; break;
-        case Bytecodes.IOR: v = x + " | " + y; break;
-        case Bytecodes.IXOR: v = x + " ^ " + y; break;
+        case Bytecodes.IAND: this.emitPush(kind, x + "&" + y, Precedence.BitwiseAND); return;
+        case Bytecodes.IOR:  this.emitPush(kind, x + "|" + y, Precedence.BitwiseOR);  return;
+        case Bytecodes.IXOR: this.emitPush(kind, x + "^" + y, Precedence.BitwiseXOR); return;
 
         case Bytecodes.LAND: v = x + ".and(" + y + ")"; break;
-        case Bytecodes.LOR: v = x + ".or(" + y + ")"; break;
+        case Bytecodes.LOR:  v = x + ".or(" + y + ")"; break;
         case Bytecodes.LXOR: v = x + ".xor(" + y + ")"; break;
         default:
           Debug.unexpected(Bytecodes[opcode]);
       }
-      this.emitPush(kind, v);
+      this.emitPush(kind, v, Precedence.Call);
     }
 
     emitConvertOp(from: Kind, to: Kind, opcode: Bytecodes) {
@@ -894,9 +1301,9 @@ module J2ME {
         case Bytecodes.I2L: v = "Long.fromInt(" + x + ")"; break;
         case Bytecodes.I2F:
         case Bytecodes.I2D: v = x; break;
-        case Bytecodes.I2B: v = "(" + x + " << 24) >> 24"; break;
-        case Bytecodes.I2C: v = x + " & 0xffff"; break;
-        case Bytecodes.I2S: v = "(" + x + " << 16) >> 16"; break;
+        case Bytecodes.I2B: v = "(" + x + "<<24)>>24"; break;
+        case Bytecodes.I2C: v = x + "&0xffff"; break;
+        case Bytecodes.I2S: v = "(" + x + "<<16)>>16"; break;
         case Bytecodes.L2I: v = x + ".toInt()"; break;
         case Bytecodes.L2F: v = "Math.fround(" + x + ".toNumber())"; break;
         case Bytecodes.L2D: v = x + ".toNumber()"; break;
@@ -907,92 +1314,122 @@ module J2ME {
         case Bytecodes.D2L: v = "util.double2long(" + x + ")"; break;
         case Bytecodes.D2F: v = "Math.fround(" + x + ")"; break;
       }
-      this.emitPush(to, v);
+      this.emitPush(to, v, Precedence.Sequence); // TODO: Restrict precedence.
     }
 
     emitCompareOp(kind: Kind, isLessThan: boolean) {
       var y = this.pop(kind);
       var x = this.pop(kind);
-      var s = this.getStack(this.sp++);
+      this.flushBlockStack();
+      var sp = this.sp ++;
+      // Get the top stack slot and make sure it is also it in the |blockStack|.
+      var s = this.blockStack[sp] = this.getStackName(sp);
       if (kind === Kind.Long) {
-        this.emitter.enter("if (" + x + ".greaterThan(" + y + ")) {");
-        this.emitter.writeLn(s + " = 1");
-        this.emitter.leaveAndEnter("} else if (" + x + ".lessThan(" + y + ")) {");
-        this.emitter.writeLn(s + " = -1");
-        this.emitter.leaveAndEnter("} else {");
-        this.emitter.writeLn(s + " = 0");
-        this.emitter.leave("}");
+        this.blockEmitter.enter("if(" + x + ".greaterThan(" + y + ")){");
+        this.blockEmitter.writeLn(s + "=1");
+        this.blockEmitter.leaveAndEnter("}else if(" + x + ".lessThan(" + y + ")){");
+        this.blockEmitter.writeLn(s + "=-1");
+        this.blockEmitter.leaveAndEnter("}else{");
+        this.blockEmitter.writeLn(s + "=0");
+        this.blockEmitter.leave("}");
       } else {
-        this.emitter.enter("if (isNaN(" + x + ") || isNaN(" + y + ")) {");
-        this.emitter.writeLn(s + " = " + (isLessThan ? "-1" : "1"));
-        this.emitter.leaveAndEnter("} else if (" + x + " > " + y + ") {");
-        this.emitter.writeLn(s + " = 1");
-        this.emitter.leaveAndEnter("} else if (" + x + " < " + y + ") {");
-        this.emitter.writeLn(s + " = -1");
-        this.emitter.leaveAndEnter("} else {");
-        this.emitter.writeLn(s + " = 0");
-        this.emitter.leave("}");
+        this.blockEmitter.enter("if(isNaN(" + x + ")||isNaN(" + y + ")){");
+        this.blockEmitter.writeLn(s + "=" + (isLessThan ? "-1" : "1"));
+        this.blockEmitter.leaveAndEnter("}else if(" + x + ">" + y + ") {");
+        this.blockEmitter.writeLn(s + "=1");
+        this.blockEmitter.leaveAndEnter("}else if(" + x + "<" + y + "){");
+        this.blockEmitter.writeLn(s + "=-1");
+        this.blockEmitter.leaveAndEnter("}else{");
+        this.blockEmitter.writeLn(s + "=0");
+        this.blockEmitter.leave("}");
       }
     }
 
     getBlockIndex(pc: number): number {
-      return this.getBlock(pc).blockID;
+      return pc;
+      // return this.getBlock(pc).blockID;
     }
 
     getBlock(pc: number): Block {
       return this.blockMap.getBlock(pc);
     }
 
-    emitTableSwitch(stream: BytecodeStream) {
+    emitTableSwitch(block: Block, stream: BytecodeStream) {
       var tableSwitch = stream.readTableSwitch();
       var value = this.pop(Kind.Int);
-      this.emitter.enter("switch(" + value + ") {");
+      // We need some text in the body of the table switch block, otherwise the
+      // branch condition variable is ignored.
+      var branchBlock = Relooper.addBlock("// Table Switch", String(value));
+      Relooper.addBranch(block.relooperBlockID, branchBlock);
+      var defaultTarget = this.getBlock(stream.currentBCI + tableSwitch.defaultOffset()).relooperBlockID;
       for (var i = 0; i < tableSwitch.numberOfCases(); i++) {
-        this.emitter.writeLn("case " + tableSwitch.keyAt(i) + ": bi = " + this.getBlockIndex(stream.currentBCI + tableSwitch.offsetAt(i)) + "; break;");
+        var key = tableSwitch.keyAt(i);
+        var target: any = this.getBlock(stream.currentBCI + tableSwitch.offsetAt(i)).relooperBlockID;
+        if (target === defaultTarget) {
+          continue;
+        }
+        var caseTargetBlock = Relooper.addBlock();
+        Relooper.addBranch(branchBlock, caseTargetBlock, "case " + key + ":");
+        Relooper.addBranch(caseTargetBlock, target);
       }
-      this.emitter.writeLn("default: bi = " + this.getBlockIndex(stream.currentBCI + tableSwitch.defaultOffset()) + "; break;");
-      this.emitter.leave("} break;");
+      Relooper.addBranch(branchBlock, defaultTarget);
     }
 
-    emitLookupSwitch(stream: BytecodeStream) {
+    emitLookupSwitch(block: Block, stream: BytecodeStream) {
       var lookupSwitch = stream.readLookupSwitch();
       var value = this.pop(Kind.Int);
-      this.emitter.enter("switch(" + value + ") {");
+      // We need some text in the body of the lookup switch block, otherwise the
+      // branch condition variable is ignored.
+      var branchBlock = Relooper.addBlock("// Lookup Switch", String(value));
+      Relooper.addBranch(block.relooperBlockID, branchBlock);
+      var defaultTarget = this.getBlock(stream.currentBCI + lookupSwitch.defaultOffset()).relooperBlockID;
       for (var i = 0; i < lookupSwitch.numberOfCases(); i++) {
-        this.emitter.writeLn("case " + lookupSwitch.keyAt(i) + ": bi = " + this.getBlockIndex(stream.currentBCI + lookupSwitch.offsetAt(i)) + "; break;");
+        var key = lookupSwitch.keyAt(i);
+        var target: any = this.getBlock(stream.currentBCI + lookupSwitch.offsetAt(i)).relooperBlockID;
+        if (target === defaultTarget) {
+          continue;
+        }
+        var caseTargetBlock = Relooper.addBlock();
+        Relooper.addBranch(branchBlock, caseTargetBlock, "case " + key + ":");
+        Relooper.addBranch(caseTargetBlock, target);
       }
-      this.emitter.writeLn("default: bi = " + this.getBlockIndex(stream.currentBCI + lookupSwitch.defaultOffset()) + "; break;");
-      this.emitter.leave("} break;");
+      Relooper.addBranch(branchBlock, defaultTarget);
     }
 
     emitBytecode(stream: BytecodeStream, block: Block) {
       var cpi: number;
       var opcode: Bytecodes = stream.currentBC();
       writer && writer.writeLn("emit: pc: " + stream.currentBCI + ", sp: " + this.sp + " " + Bytecodes[opcode]);
+
+      var flushBlockStackAfter = false;
       if ((block.isExceptionEntry || block.hasHandlers) && Bytecode.canTrap(opcode)) {
-        // This needs to update the PC not the BI.
-        this.emitter.writeLn("pc = " + this.pc + ";");
+        this.blockEmitter.writeLn("pc=" + this.pc + ";");
+        flushBlockStackAfter = true;
+      }
+
+      if (needsStackFlushBefore(opcode, this.sp)) {
+        this.flushBlockStack();
       }
 
       switch (opcode) {
         case Bytecodes.NOP            : break;
-        case Bytecodes.ACONST_NULL    : this.emitPush(Kind.Reference, "null"); break;
-        case Bytecodes.ICONST_M1      :
+        case Bytecodes.ACONST_NULL    : this.emitPush(Kind.Reference, "null", Precedence.Primary); break;
+        case Bytecodes.ICONST_M1      : this.emitPush(Kind.Int, opcode - Bytecodes.ICONST_0, Precedence.UnaryNegation); break;
         case Bytecodes.ICONST_0       :
         case Bytecodes.ICONST_1       :
         case Bytecodes.ICONST_2       :
         case Bytecodes.ICONST_3       :
         case Bytecodes.ICONST_4       :
-        case Bytecodes.ICONST_5       : this.emitPush(Kind.Int, opcode - Bytecodes.ICONST_0); break;
+        case Bytecodes.ICONST_5       : this.emitPush(Kind.Int, opcode - Bytecodes.ICONST_0, Precedence.Primary); break;
         case Bytecodes.FCONST_0       :
         case Bytecodes.FCONST_1       :
-        case Bytecodes.FCONST_2       : this.emitPush(Kind.Float, opcode - Bytecodes.FCONST_0); break;
+        case Bytecodes.FCONST_2       : this.emitPush(Kind.Float, opcode - Bytecodes.FCONST_0, Precedence.Primary); break;
         case Bytecodes.DCONST_0       :
-        case Bytecodes.DCONST_1       : this.emitPush(Kind.Double, opcode - Bytecodes.DCONST_0); break;
+        case Bytecodes.DCONST_1       : this.emitPush(Kind.Double, opcode - Bytecodes.DCONST_0, Precedence.Primary); break;
         case Bytecodes.LCONST_0       :
-        case Bytecodes.LCONST_1       : this.emitPush(Kind.Long, longConstant(opcode - Bytecodes.LCONST_0)); break;
-        case Bytecodes.BIPUSH         : this.emitPush(Kind.Int, stream.readByte()); break;
-        case Bytecodes.SIPUSH         : this.emitPush(Kind.Int, stream.readShort()); break;
+        case Bytecodes.LCONST_1       : this.emitPush(Kind.Long, longConstant(opcode - Bytecodes.LCONST_0), Precedence.Primary); break;
+        case Bytecodes.BIPUSH         : this.emitPushInteger(stream.readByte()); break;
+        case Bytecodes.SIPUSH         : this.emitPushInteger(stream.readShort()); break;
         case Bytecodes.LDC            :
         case Bytecodes.LDC_W          :
         case Bytecodes.LDC2_W         : this.emitLoadConstant(stream.readCPI()); break;
@@ -1147,13 +1584,9 @@ module J2ME {
         case Bytecodes.IF_ICMPLE      : this.emitIfSame(block, stream, Kind.Int, Condition.LE); break;
         case Bytecodes.IF_ACMPEQ      : this.emitIfSame(block, stream, Kind.Reference, Condition.EQ); break;
         case Bytecodes.IF_ACMPNE      : this.emitIfSame(block, stream, Kind.Reference, Condition.NE); break;
-        case Bytecodes.GOTO           : this.emitGoto(stream); break;
-        ///*
-        //case Bytecodes.JSR            : genJsr(stream.readBranchDest()); break;
-        //case Bytecodes.RET            : genRet(stream.readLocalIndex()); break;
-        case Bytecodes.TABLESWITCH    : this.emitTableSwitch(stream); break;
-        case Bytecodes.LOOKUPSWITCH   : this.emitLookupSwitch(stream); break;
-        //*/
+        case Bytecodes.GOTO           : this.emitGoto(block, stream); break;
+        case Bytecodes.TABLESWITCH    : this.emitTableSwitch(block, stream); break;
+        case Bytecodes.LOOKUPSWITCH   : this.emitLookupSwitch(block, stream); break;
         case Bytecodes.IRETURN        : this.emitReturn(Kind.Int); break;
         case Bytecodes.LRETURN        : this.emitReturn(Kind.Long); break;
         case Bytecodes.FRETURN        : this.emitReturn(Kind.Float); break;
@@ -1162,37 +1595,35 @@ module J2ME {
         case Bytecodes.RETURN         : this.emitReturn(Kind.Void); break;
         case Bytecodes.GETSTATIC      : cpi = stream.readCPI(); this.emitGetField(this.lookupField(cpi, opcode, true), true); break;
         case Bytecodes.PUTSTATIC      : cpi = stream.readCPI(); this.emitPutField(this.lookupField(cpi, opcode, true), true); break;
-        case Bytecodes.GETFIELD       : cpi = stream.readCPI(); this.emitGetField(this.lookupField(cpi, opcode, false), false); break;
-        case Bytecodes.PUTFIELD       : cpi = stream.readCPI(); this.emitPutField(this.lookupField(cpi, opcode, false), false); break;
-        case Bytecodes.INVOKEVIRTUAL  : cpi = stream.readCPI(); this.emitInvoke(this.lookupMethod(cpi, opcode, false), opcode, stream.nextBCI); break;
+        case Bytecodes.RESOLVED_GETFIELD      : opcode = Bytecodes.GETFIELD;
+        case Bytecodes.GETFIELD               : cpi = stream.readCPI(); this.emitGetField(this.lookupField(cpi, opcode, false), false); break;
+        case Bytecodes.RESOLVED_PUTFIELD      : opcode = Bytecodes.PUTFIELD;
+        case Bytecodes.PUTFIELD               : cpi = stream.readCPI(); this.emitPutField(this.lookupField(cpi, opcode, false), false); break;
+        case Bytecodes.RESOLVED_INVOKEVIRTUAL : opcode = Bytecodes.INVOKEVIRTUAL;
+        case Bytecodes.INVOKEVIRTUAL          : cpi = stream.readCPI(); this.emitInvoke(this.lookupMethod(cpi, opcode, false), opcode, stream.nextBCI); break;
         case Bytecodes.INVOKESPECIAL  : cpi = stream.readCPI(); this.emitInvoke(this.lookupMethod(cpi, opcode, false), opcode, stream.nextBCI); break;
         case Bytecodes.INVOKESTATIC   : cpi = stream.readCPI(); this.emitInvoke(this.lookupMethod(cpi, opcode, true), opcode, stream.nextBCI); break;
         case Bytecodes.INVOKEINTERFACE: cpi = stream.readCPI(); this.emitInvoke(this.lookupMethod(cpi, opcode, false), opcode, stream.nextBCI); break;
         case Bytecodes.NEW            : this.emitNewInstance(stream.readCPI()); break;
         case Bytecodes.NEWARRAY       : this.emitNewTypeArray(stream.readLocalIndex()); break;
         case Bytecodes.ANEWARRAY      : this.emitNewObjectArray(stream.readCPI()); break;
+        case Bytecodes.MULTIANEWARRAY : this.emitNewMultiObjectArray(stream.readCPI(), stream); break;
         case Bytecodes.ARRAYLENGTH    : this.emitArrayLength(); break;
         case Bytecodes.ATHROW         : this.emitThrow(stream.currentBCI); break;
         case Bytecodes.CHECKCAST      : this.emitCheckCast(stream.readCPI()); break;
         case Bytecodes.INSTANCEOF     : this.emitInstanceOf(stream.readCPI()); break;
-        ///*
-        case Bytecodes.MONITORENTER   : this.emitMonitorEnter(stream.nextBCI, this.pop(Kind.Reference)); break;
-        case Bytecodes.MONITOREXIT    : this.emitMonitorExit(this.pop(Kind.Reference)); break;
-        //case Bytecodes.MULTIANEWARRAY : genNewMultiArray(stream.readCPI()); break;
-        //*/
+        case Bytecodes.MONITORENTER   : this.emitMonitorEnter(this.blockEmitter, stream.nextBCI, this.pop(Kind.Reference)); break;
+        case Bytecodes.MONITOREXIT    : this.emitMonitorExit(this.blockEmitter, this.pop(Kind.Reference)); break;
         case Bytecodes.IFNULL         : this.emitIfNull(block, stream, Condition.EQ); break;
         case Bytecodes.IFNONNULL      : this.emitIfNull(block, stream, Condition.NE); break;
-        ///*
-        //case Bytecodes.GOTO_W         : genGoto(stream.readFarBranchDest()); break;
-        //case Bytecodes.JSR_W          : genJsr(stream.readFarBranchDest()); break;
-        //case Bytecodes.BREAKPOINT:
-        //throw new CiBailout("concurrent setting of breakpoint");
-        //default:
-        //throw new CiBailout("Unsupported opcode " + opcode + " (" + nameOf(opcode) + ") [bci=" + bci + "]");
-        //}
-        //*/
+        // The following bytecodes are not supported yet and are not frequently used.
+        // case Bytecodes.JSR            : ... break;
+        // case Bytecodes.RET            : ... break;
         default:
           throw new Error("Not Implemented " + Bytecodes[opcode]);
+      }
+      if (flushBlockStackAfter) {
+        this.flushBlockStack();
       }
       writer && writer.writeLn("");
     }

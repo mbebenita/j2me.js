@@ -4,14 +4,24 @@
 var system = require('system');
 var fs = require('fs');
 
+// Enable TCP socket API and grant tcp-socket permission to the testing page
+var { Cu } = require("chrome");
+Cu.import("resource://gre/modules/Services.jsm");
+Services.prefs.setBoolPref("dom.mozTCPSocket.enabled", true);
+var uri = Services.io.newURI("http://localhost:8000", null, null);
+var principal = Services.scriptSecurityManager.getNoAppCodebasePrincipal(uri);
+Services.perms.addFromPrincipal(principal, "tcp-socket", Services.perms.ALLOW_ACTION);
+
 casper.on('remote.message', function(message) {
     this.echo(message);
 });
 
-casper.options.waitTimeout = 70000;
+casper.options.waitTimeout = 80000;
 casper.options.verbose = true;
-casper.options.logLevel = "debug";
 casper.options.viewportSize = { width: 240, height: 320 };
+casper.options.clientScripts = [
+  "tests/mocks/getUserMedia.js",
+];
 
 casper.options.onWaitTimeout = function() {
     this.echo("data:image/png;base64," + this.captureBase64('png'));
@@ -19,58 +29,130 @@ casper.options.onWaitTimeout = function() {
 };
 
 var gfxTests = [
-  { name: "gfx/CanvasTest", maxDifferent: 271 },
-  { name: "gfx/DrawRegionTest", maxDifferent: 0 },
-  { name: "gfx/ImageRenderingTest", maxDifferent: 266 },
-  { name: "gfx/FillRectTest", maxDifferent: 0 },
-  { name: "gfx/DrawAndFillRoundRectTest", maxDifferent: 2000 },
-  { name: "gfx/DrawAndFillArcTest", maxDifferent: 2000 },
-  { name: "gfx/DrawStringTest", maxDifferent: 345 },
-  { name: "gfx/DrawRedStringTest", maxDifferent: 513 },
-  { name: "gfx/TextBoxTest", maxDifferent: 4722 },
-  { name: "gfx/DirectUtilsCreateImageTest", maxDifferent: 0 },
-  { name: "gfx/GetPixelsDrawPixelsTest", maxDifferent: 0 },
-  { name: "gfx/OffScreenCanvasTest", maxDifferent: 0 },
-  { name: "gfx/ARGBColorTest", maxDifferent: 0 },
-  { name: "gfx/GetRGBDrawRGBTest", maxDifferent: 0 },
-  { name: "gfx/GetRGBDrawRGBWidthHeightTest", maxDifferent: 0 },
-  { name: "gfx/GetRGBDrawRGBxyTest", maxDifferent: 0 },
-  { name: "gfx/GetRGBDrawRGBNoAlphaTest", maxDifferent: 0, todo: true },
-  { name: "gfx/ClippingTest", maxDifferent: 0 },
-  { name: "gfx/ImageProcessingTest", maxDifferent: 6184 },
-  { name: "gfx/CreateImageWithRegionTest", maxDifferent: 0 },
-  { name: "gfx/DrawSubstringTest", maxDifferent: 332 },
-  { name: "gfx/DrawLineOffscreenCanvasTest", maxDifferent: 1500 },
-  { name: "gfx/DirectUtilsClipAfter", maxDifferent: 0 },
-  { name: "gfx/DirectUtilsClipAfterOnScreen", maxDifferent: 0, todo: true },
-  { name: "gfx/DirectUtilsClipAfterOnScreen2", maxDifferent: 0 },
-  { name: "gfx/DirectUtilsClipAfterWithNormalImage", maxDifferent: 0 },
-  { name: "gfx/DirectUtilsClipBefore", maxDifferent: 0 },
-  { name: "gfx/DirectUtilsClipBeforeOnScreen", maxDifferent: 0, todo: true },
-  { name: "gfx/DirectUtilsClipBeforeOnScreen2", maxDifferent: 0 },
-  { name: "gfx/DirectUtilsClipBeforeWithNormalImage", maxDifferent: 0 },
-  { name: "gfx/ImmutableImageFromByteArrayTest", maxDifferent: 0 },
-  { name: "gfx/ClippingWithAnchorTest", maxDifferent: 0 },
-  { name: "gfx/DirectGraphicsDrawPixelsWithXY", maxDifferent: 0 },
-  { name: "gfx/DrawStringRightAnchorTest", maxDifferent: 333 },
-  { name: "gfx/DrawStringBaselineAnchorTest", maxDifferent: 327 },
-  { name: "gfx/DrawStringBottomAnchorTest", maxDifferent: 347 },
-  { name: "gfx/DrawStringHCenterAnchorTest", maxDifferent: 333 },
-  { name: "gfx/RectAfterText", maxDifferent: 637 },
-  { name: "gfx/DrawStringWithEmojiTest", maxDifferent: 936 },
-  { name: "gfx/DrawSubstringWithEmojiTest", maxDifferent: 936 },
-  { name: "gfx/DrawCharsWithEmojiTest", maxDifferent: 936 },
-  { name: "gfx/CreateImmutableCopyTest", maxDifferent: 0 },
-  { name: "gfx/LauncherTest", maxDifferent: 0 },
-  { name: "gfx/MediaImageTest", maxDifferent: 0 },
-  { name: "gfx/TextEditorGfxTest", maxDifferent: 949 },
-];
-
-var expectedUnitTestResults = [
-  { name: "pass", number: 71571 },
-  { name: "fail", number: 0 },
-  { name: "known fail", number: 179 },
-  { name: "unknown pass", number: 0 }
+  { name: "gfx/AlertTest", maxDifferentLinux: 1266, maxDifferentMac: 2029 },
+  { name: "gfx/AlertTwoCommandsTest", maxDifferentLinux: 1403, maxDifferentMac: 2186 },
+  { name: "gfx/CanvasTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/CanvasWithHeaderTest", maxDifferentLinux: 823, maxDifferentMac: 1351 },
+  { name: "gfx/ImageRenderingTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/FillRectTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DrawAndFillRoundRectTest", maxDifferentLinux: 243, maxDifferentMac: 1592 },
+  { name: "gfx/DrawAndFillArcTest", maxDifferentLinux: 5, maxDifferentMac: 1765 },
+  { name: "gfx/DrawStringTest", maxDifferentLinux: 232, maxDifferentMac: 321 },
+  { name: "gfx/DrawRedStringTest", maxDifferentLinux: 338, maxDifferentMac: 485 },
+  { name: "gfx/TextBoxTest", maxDifferentLinux: 0, maxDifferentMac: 0, todo: true },
+  { name: "gfx/DirectUtilsCreateImageTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/GetPixelsDrawPixelsTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/OffScreenCanvasTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/ARGBColorTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/GetRGBDrawRGBTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/GetRGBDrawRGBWidthHeightTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/GetRGBDrawRGBxyTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/GetRGBDrawRGBNoAlphaTest", maxDifferentLinux: 0, maxDifferentMac: 0, todo: true },
+  { name: "gfx/ClippingTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/ImageProcessingTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/CreateImageWithRegionTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DrawSubstringTest", maxDifferentLinux: 205, maxDifferentMac: 295 },
+  { name: "gfx/DrawLineOffscreenCanvasTest", maxDifferentLinux: 0, maxDifferentMac: 788 },
+  { name: "gfx/DirectUtilsClipAfter", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DirectUtilsClipAfterOnScreen", maxDifferentLinux: 0, maxDifferentMac: 0, todo: true },
+  { name: "gfx/DirectUtilsClipAfterOnScreen2", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DirectUtilsClipAfterWithNormalImage", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DirectUtilsClipBefore", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DirectUtilsClipBeforeOnScreen", maxDifferentLinux: 0, maxDifferentMac: 0, todo: true },
+  { name: "gfx/DirectUtilsClipBeforeOnScreen2", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DirectUtilsClipBeforeWithNormalImage", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/ImmutableImageFromByteArrayTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/ClippingWithAnchorTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DirectGraphicsDrawPixelsWithXY", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DrawStringRightAnchorTest", maxDifferentLinux: 252, maxDifferentMac: 319 },
+  { name: "gfx/DrawStringBaselineAnchorTest", maxDifferentLinux: 233, maxDifferentMac: 292 },
+  { name: "gfx/DrawStringBottomAnchorTest", maxDifferentLinux: 233, maxDifferentMac: 322 },
+  { name: "gfx/DrawStringHCenterAnchorTest", maxDifferentLinux: 213, maxDifferentMac: 301 },
+  { name: "gfx/RectAfterText", maxDifferentLinux: 438, maxDifferentMac: 576 },
+  { name: "gfx/DrawStringWithEmojiTest", maxDifferentLinux: 968, maxDifferentMac: 1151 },
+  { name: "gfx/DrawSubstringWithEmojiTest", maxDifferentLinux: 968, maxDifferentMac: 1151 },
+  { name: "gfx/DrawCharsWithEmojiTest", maxDifferentLinux: 968, maxDifferentMac: 1151 },
+  { name: "gfx/CreateImmutableCopyTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/LauncherTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/MediaImageTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/TextEditorGfxTest", maxDifferentLinux: 968, maxDifferentMac: 1057 },
+  { name: "gfx/DrawStringWithCopyrightAndRegisteredSymbols", maxDifferentLinux: 159, maxDifferentMac: 248 },
+  { name: "gfx/VideoPlayerTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/ImageCapture", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/CameraTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
+  { name: "gfx/DrawRegionTransMirrorAnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorAnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot180AnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot270AnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransMirrorRot90AnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransNoneAnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot180AnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot270AnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorBottomHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorBottomLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorBottomRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorTopHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorTopLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorTopRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorVCenterHCenter", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorVCenterLeft", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/DrawRegionTransRot90AnchorVCenterRight", maxDifferentLinux: 164, maxDifferentMac: 164 },
+  { name: "gfx/MultipleImageGraphicsTest", maxDifferentLinux: 0, maxDifferentMac: 0 },
 ];
 
 /**
@@ -95,7 +177,7 @@ function syncFS() {
     });
 }
 
-casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
+casper.test.begin("unit tests", 28 + gfxTests.length, function(test) {
     casper.start("data:text/plain,start");
 
     casper.page.onLongRunningScript = function(message) {
@@ -106,7 +188,7 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
     // Run the Init midlet, which does nothing by itself but ensures that any
     // initialization code gets run before we start a test that depends on it.
     casper
-    .thenOpen("http://localhost:8000/index.html?midletClassName=midlets.InitMidlet&jars=tests/tests.jar&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?midletClassName=midlets.InitMidlet&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("DONE", syncFS);
     });
@@ -120,72 +202,91 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
     function basicUnitTests() {
         casper.waitForText("DONE", function() {
             var content = this.getPageContent();
-            var regex = /DONE: (\d+) pass, (\d+) fail, (\d+) known fail, (\d+) unknown pass/;
+            var regex = /DONE: (\d+) class pass, (\d+) class fail/;
             var match = content.match(regex);
-            if (!match || !match.length || match.length < 5) {
+            if (!match || !match.length || match.length < 3) {
                 this.echo("data:image/png;base64," + this.captureBase64('png'));
                 test.fail('failed to parse status line of main unit tests');
             } else {
-                var msg = "";
-                for (var i = 0; i < expectedUnitTestResults.length; i++) {
-                    if (match[i+1] != expectedUnitTestResults[i].number) {
-                        msg += "\n\tExpected " + expectedUnitTestResults[i].number + " " + expectedUnitTestResults[i].name + ". Got " + match[i+1];
-                    }
-                }
-                if (!msg) {
+                var failed = match[2];
+                if (failed === "0") {
                     test.pass('main unit tests');
                 } else {
-                    this.echo("data:image/png;base64," + this.captureBase64('png'));
-                    test.fail(msg);
+                    test.fail(failed + " unit test(s) failed");
                 }
             }
             syncFS();
         });
     }
-    casper
-    .thenOpen("http://localhost:8000/index.html?logConsole=web,page")
-    .withFrame(0, basicUnitTests);
 
     casper
-    .thenOpen("http://localhost:8000/index.html?numCalled=1000&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?logConsole=web,page&logLevel=log")
+    .withFrame(0, basicUnitTests);
+
+    // Run the same unit tests again to test the compiled method cache.
+    casper
+    .thenOpen("http://localhost:8000/index.html?logConsole=web,page&logLevel=log")
+    .withFrame(0, basicUnitTests);
+
+    // Run the same unit tests again with baseline JIT enabled for all methods.
+    casper
+    .thenOpen("http://localhost:8000/index.html?logConsole=web,page&logLevel=log&forceRuntimeCompilation=1")
     .withFrame(0, basicUnitTests);
 
     casper
     .thenOpen("http://localhost:8000/index.html?main=tests/isolate/TestIsolate&logLevel=info&logConsole=web,page,raw")
     .withFrame(0, function() {
         casper.waitForText("DONE", function() {
-            test.assertTextExists("I m\n" +
-                                  "I a ma\n" +
-                                  "I 2\n" +
-                                  "I ma\n" +
-                                  "I 2\n" +
-                                  "I 1 isolate\n" +
-                                  "I Isolate ID correct\n" +
-                                  "I 4\n" +
-                                  "I 5\n" +
-                                  "I 1 isolate\n" +
-                                  "I ma\n" +
-                                  "I ma\n" +
-                                  "I 3 isolates\n" +
-                                  "I 1 m1\n" +
-                                  "I 4\n" +
-                                  "I 2 m2\n" +
-                                  "I 5\n" +
-                                  "I ma\n" +
-                                  "I 1 isolate\n" +
-                                  "I Isolates terminated\n" +
-                                  "I r mar\n" +
-                                  "I 2\n" +
-                                  "I mar\n" +
-                                  "I c marc\n" +
-                                  "I 2\n" +
-                                  "I marc\n" +
-                                  "I Main isolate still running");
+          var output = this.fetchText('#raw-console');
+          var expectedOutput = ["I 0: m",
+            "I 3 0 a ma",
+            "I 1: ma",
+            "I 2: 3",
+            "I 3: 1 isolate",
+            "I 4: Isolate ID correct",
+            "I 5: 5",
+            "I 6: 6",
+            "I 7: 1 isolate",
+            "I 8: ma",
+            "I 9: ma",
+            "I 10: 3 isolates",
+            "I 6 0 2 m2",
+            "I 5 0 1 m1",
+            "I 11: ma",
+            "I 12: 1 isolate",
+            "I 13: Isolates terminated",
+            "I 3 1 r mar",
+            "I 14: mar",
+            "I 3 2 c marc",
+            "I 15: marc",
+            "I 16: Main isolate still running",
+            "I DONE",
+            ""];
+          output = output.split("\n").sort();
+          expectedOutput.sort();
+          test.assert(expectedOutput.length === output.length, "Same number of lines output.");
+          var allMatch = true;
+          for (var i = 0; i < expectedOutput.length; i++) {
+            if (expectedOutput[i] !== output[i]) {
+              allMatch = false;
+              break;
+            }
+          }
+          test.assert(allMatch, "All lines are contained within output.");
         });
     });
 
     casper
-    .thenOpen("http://localhost:8000/index.html?midletClassName=tests/alarm/MIDlet1&jad=tests/midlets/alarm/alarm.jad&jars=tests/tests.jar&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?main=MainStaticInitializer&logLevel=info&logConsole=web,page,raw")
+    .withFrame(0, function() {
+        casper.waitForText("DONE", function() {
+            test.assertTextExists("I 1) static init\n" +
+                                  "I 2) main");
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests/alarm/MIDlet1&jad=tests/midlets/alarm/alarm.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("Hello World from MIDlet2", function() {
             test.pass();
@@ -193,7 +294,71 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
     });
 
     casper
-    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.sms.SMSMIDlet&jars=tests/tests.jar&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests/recordstore/WriterMIDlet&jad=tests/midlets/RecordStore/recordstore.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
+    .withFrame(0, function() {
+        casper.waitForText("DONE", function() {
+            test.assertTextDoesntExist("FAIL");
+            test.assertTextExists("SUCCESS 8/8", "Test RecordStore with multiple MIDlets");
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.background.BackgroundMIDlet1&jad=tests/midlets/background/background1.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
+    .withFrame(0, function() {
+        casper.waitForText("Hello World from foreground MIDlet", function() {
+            test.pass("First background test");
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.background.BackgroundMIDlet2&jad=tests/midlets/background/background2.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
+    .withFrame(0, function() {
+        casper.waitForText("Hello World from foreground MIDlet", function() {
+            test.pass("Second background test");
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.background.BackgroundMIDlet3&jad=tests/midlets/background/background3.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
+    .withFrame(0, function() {
+        casper.waitForText("Hello World from foreground MIDlet", function() {
+            test.assertTextExists("prop1=hello prop2=ciao");
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.background.BackgroundMIDlet1&jad=tests/midlets/background/foregroundExit.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log", function() {
+      casper.evaluate(function() {
+        window.close = function() {
+          document.title = "window.close called";
+        }
+      });
+
+      casper.waitFor(function() {
+        return !!this.getTitle();
+      }, function() {
+        test.assertEquals(this.getTitle(), "window.close called", "window.close called");
+      });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.background.BackgroundMIDlet1&jad=tests/midlets/background/destroy.jad&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
+    .withFrame(0, function() {
+        casper.waitForText("PAINTED", function() {
+          casper.waitForSelector("#canvas", function() {
+            this.click("#canvas");
+          });
+
+          casper.waitForText("DONE", function() {
+            var content = this.getPageContent();
+            test.assertEquals(content.match(/startApp1/g).length, 2, "Two startApp1");
+            test.assertEquals(content.match(/destroyApp/g).length, 1, "One destroyApp");
+          });
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.sms.SMSMIDlet&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
     .withFrame(0, function() {
         this.waitForText("START", function() {
             this.evaluate(function() {
@@ -210,7 +375,7 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
     });
 
     casper
-    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.fileui.FileUIMIDlet&jars=tests/tests.jar&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?midletClassName=tests.fileui.FileUIMIDlet&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
     .withFrame(0, function() {
         this.waitForText("START", function() {
             this.waitUntilVisible(".nokia-fileui-prompt", function() {
@@ -236,7 +401,7 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
 
     gfxTests.forEach(function(testCase) {
         casper
-        .thenOpen("http://localhost:8000/index.html?fontSize=10&midletClassName=" + testCase.name + "&jars=tests/tests.jar&logConsole=web,page")
+        .thenOpen("http://localhost:8000/index.html?fontSize=12&midletClassName=" + testCase.name + "&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
         .withFrame(0, function() {
             casper.waitForText("PAINTED", function() {
                 this.waitForSelector("#canvas", function() {
@@ -291,18 +456,23 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
                                 }
                             }
 
-                            if (different > testCase.maxDifferent) {
+                            var maxDifferent = navigator.platform.indexOf("Linux") != -1 ?
+                                                 testCase.maxDifferentLinux :
+                                                 testCase.maxDifferentMac;
+
+                            var message = different + " <= " + maxDifferent;
+                            if (different > maxDifferent) {
                                 console.log(got.canvas.toDataURL());
                                 if (!testCase.todo) {
-                                  console.log("FAIL - " + different);
+                                  console.log("FAIL - " + message);
                                 } else {
-                                  console.log("TODO - " + different);
+                                  console.log("TODO - " + message);
                                 }
                             } else {
                                 if (!testCase.todo) {
-                                    console.log("PASS - " + different);
+                                    console.log("PASS - " + message);
                                 } else {
-                                    console.log("UNEXPECTED PASS - " + different);
+                                    console.log("UNEXPECTED PASS - " + message);
                                 }
                             }
 
@@ -334,7 +504,7 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
     });
 
     casper
-    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=1.0.0")
+    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=1.0.0&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("DONE", function() {
             test.assertTextExists("SUCCESS 3/3", "test JAD downloader - Download");
@@ -342,9 +512,9 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
         });
     });
 
-    // Run the test a second time to ensure loading the JAR stored in the FS works correctly.
+    // Run the test a second time to ensure loading the JAR stored in the JARStore works correctly.
     casper
-    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=1.0.0")
+    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=1.0.0&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("DONE", function() {
             test.assertTextExists("SUCCESS 3/3", "test JAD downloader - Load");
@@ -355,7 +525,7 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
 
     // Run the test that updates the MIDlet
     casper
-    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDletUpdater&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDletUpdater&logConsole=web,page&logLevel=log")
     .withFrame(0, function() {
         var alertText = null;
         casper.on('remote.alert', function onAlert(message) {
@@ -373,7 +543,7 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
 
     // Verify that the update has been applied
     casper
-    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=3.0.0")
+    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest1.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=3.0.0&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("DONE", function() {
             test.assertTextExists("SUCCESS 3/3", "test JAD downloader - Load after update");
@@ -381,13 +551,13 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
         });
     });
 
-    // Clear the FS before downloading another JAD
+    // Clear the JARStore before downloading another JAD
     casper
-    .thenOpen("http://localhost:8000/tests/fs/delete-fs.html")
+    .thenOpen("http://localhost:8000/tests/jarstore/clear-jarstore.html")
     .waitForText("DONE");
 
     casper
-    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest2.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=2.0.0")
+    .thenOpen("http://localhost:8000/index.html?downloadJAD=http://localhost:8000/tests/Manifest2.jad&midletClassName=tests.jaddownloader.AMIDlet&logConsole=web,page&args=2.0.0&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("DONE", function() {
             test.assertTextExists("SUCCESS 3/3", "test JAD downloader - Download with absolute URL");
@@ -396,10 +566,32 @@ casper.test.begin("unit tests", 14 + gfxTests.length, function(test) {
     });
 
     casper
-    .thenOpen("http://localhost:8000/index.html?midletClassName=com.sun.midp.midlet.TestMIDletPeer&jars=tests/tests.jar&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?midletClassName=com.sun.midp.midlet.TestMIDletPeer&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
     .waitForPopup("test.html", function() {
         test.assertEquals(this.popups.length, 1);
         test.assertTextDoesntExist("FAIL");
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/index.html?midletClassName=midlets.TestAlertWithGauge&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
+    .withFrame(0, function() {
+        this.waitUntilVisible(".lcdui-alert.visible .button1", function() {
+            this.click(".lcdui-alert.visible .button0");
+            this.waitForText("You pressed 'Yes'", function() {
+                test.assertTextDoesntExist("FAIL");
+
+                this.click(".lcdui-alert.visible .button1");
+                this.waitForText("You pressed 'No'", function() {
+                    test.assertTextDoesntExist("FAIL");
+                });
+            });
+        });
+    });
+
+    casper
+    .thenOpen("http://localhost:8000/tests/jarstore/jarstoretests.html")
+    .waitForText("DONE", function() {
+        test.assertTextExists("DONE: 23 pass, 0 fail", "JARStore unit tests");
     });
 
     casper

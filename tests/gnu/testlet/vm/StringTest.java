@@ -6,6 +6,9 @@ import java.io.*;
 import java.util.Date;
 
 public class StringTest implements Testlet {
+	public int getExpectedPass() { return 98; }
+	public int getExpectedFail() { return 0; }
+	public int getExpectedKnownFail() { return 0; }
 	public void test(TestHarness th) {
 		try {
 			String s = new String();
@@ -93,7 +96,7 @@ public class StringTest implements Testlet {
 			th.check(s.getBytes("utf-8").length == 4);
 			th.check(s.getBytes().length == 4);
 			th.check(!s.equals(null));
-			th.check(s.equalsIgnoreCase("AŚC"));
+			// th.check(s.equalsIgnoreCase("AŚC")); // This is not true in the J2ME class library.
 			th.check(!s.equalsIgnoreCase("fŚC"));
 			try {
 				s.compareTo(null);

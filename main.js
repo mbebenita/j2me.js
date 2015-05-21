@@ -3,42 +3,25 @@
 
 'use strict';
 
-// To launch the unit tests: ?main=RunTests
-// To launch the MIDP demo: ?main=com/sun/midp/main/MIDletSuiteLoader&midletClassName=HelloCommandMIDlet
-// To launch a JAR file: ?main=com/sun/midp/main/MIDletSuiteLoader&args=app.jar
-
-// The base directory of the app, relative to the current page.  Normally this
-// is the directory from which the page was loaded, but some test pages load
-// from a subdirectory, like tests/fs/, and they set this accordingly such that
-// code loads files, like libs/fs-init.js, can load them from the right place.
-var APP_BASE_DIR = "./";
+// The real profile and release variable declaration in config.ts are folded away by closure. Until we
+// make closure process this file also, make sure that |profile| is defined in this file.
+var release;
+var profile;
 
 var jvm = new JVM();
-
-var main = config.main || "com/sun/midp/main/MIDletSuiteLoader";
-MIDP.midletClassName = config.midletClassName ? config.midletClassName.replace(/\//g, '.') : "RunTests";
 
 if ("gamepad" in config && !/no|0/.test(config.gamepad)) {
   document.documentElement.classList.add('gamepad');
 }
 
-var jars = ["java/classes.jar"];
+var jars = [];
 
-if (MIDP.midletClassName == "RunTests") {
-  jars.push("tests/tests.jar");
+if (typeof Benchmark !== "undefined") {
+  Benchmark.startup.init();
 }
 
 if (config.jars) {
   jars = jars.concat(config.jars.split(":"));
-}
-
-if (config.pushConn && config.pushMidlet) {
-  MIDP.ConnectionRegistry.addConnection({
-    connection: config.pushConn,
-    midlet: config.pushMidlet,
-    filter: "*",
-    suiteId: "1"
-  });
 }
 
 // Mobile info gets accessed a lot, so we cache it on startup.
@@ -51,22 +34,18 @@ var getMobileInfo = new Promise(function(resolve, reject) {
   });
 });
 
-var loadingPromises = [initFS, getMobileInfo];
+var loadingMIDletPromises = [initFS, getMobileInfo];
+
+var loadingPromises = [];
+
+loadingPromises.push(load("java/classes.jar", "arraybuffer").then(function(data) {
+  JARStore.addBuiltIn("java/classes.jar", data);
+  CLASSES.initializeBuiltinClasses();
+}));
 
 jars.forEach(function(jar) {
-  loadingPromises.push(load(jar, "arraybuffer").then(function(data) {
-    CLASSES.addPath(jar, data);
-  }));
-});
-
-var packs = [
-  // "build/classes.jar.js.pack",
-  // "build/tests.jar.js.pack"
-];
-
-packs.forEach(function(pack) {
-  loadingPromises.push(load(pack, "arraybuffer").then(function(data) {
-    CLASSES.addPath(pack, data);
+  loadingMIDletPromises.push(load(jar, "arraybuffer").then(function(data) {
+    JARStore.addBuiltIn(jar, data);
   }));
 });
 
@@ -81,30 +60,24 @@ function processJAD(data) {
       var key = entry.substring(0, keyEnd);
       var val = entry.substring(keyEnd + 1).trim();
       MIDP.manifest[key] = val;
-
-      if (key == "MIDlet-Name") {
-        var title = document.getElementById("splash-screen").querySelector(".title");
-        title.textContent = "Loading " + val;
-      }
     }
   });
 }
 
 if (config.jad) {
-  loadingPromises.push(load(config.jad, "text").then(processJAD));
+  loadingMIDletPromises.push(load(config.jad, "text").then(processJAD).then(backgroundCheck));
 }
 
-function performDownload(url, dialog, callback) {
-  var dialogText = dialog.querySelector('h1.download-dialog-text');
-  dialogText.textContent = "Downloading " + MIDlet.name + "…";
-
-  var progressBar = dialog.querySelector('progress.pack-activity');
+function performDownload(url, callback) {
+  showDownloadScreen();
+  var progressBar = downloadDialog.querySelector('progress.pack-activity');
 
   var sender = DumbPipe.open("JARDownloader", url, function(message) {
     switch (message.type) {
       case "done":
         DumbPipe.close(sender);
-
+        hideDownloadScreen();
+        progressBar.value = 0;
         callback(message.data);
 
         break;
@@ -115,25 +88,18 @@ function performDownload(url, dialog, callback) {
 
       case "fail":
         DumbPipe.close(sender);
-
+        hideDownloadScreen();
         progressBar.value = 0;
-        progressBar.style.display = "none";
 
-        var dialogText = dialog.querySelector('h1.download-dialog-text');
-        dialogText.textContent = "Download failure";
+        var failureDialog = document.getElementById('download-failure-dialog');
+        failureDialog.style.display = '';
 
-        var btnRetry = dialog.querySelector('button.recommend');
-        btnRetry.style.display = '';
-
+        var btnRetry = failureDialog.querySelector('button.recommend');
         btnRetry.addEventListener('click', function onclick(e) {
           e.preventDefault();
           btnRetry.removeEventListener('click', onclick);
-
-          btnRetry.style.display = "none";
-
-          progressBar.style.display = '';
-
-          performDownload(url, dialog, callback);
+          failureDialog.style.display = 'none';
+          performDownload(url, callback);
         });
 
         break;
@@ -142,57 +108,39 @@ function performDownload(url, dialog, callback) {
 }
 
 if (config.downloadJAD) {
-  loadingPromises.push(initFS.then(function() {
-    return new Promise(function(resolve, reject) {
-      fs.exists("/midlet.jar", function(exists) {
-        if (exists) {
-          Promise.all([
-            new Promise(function(resolve, reject) {
-              fs.open("/midlet.jar", function(fd) {
-                CLASSES.addPath("midlet.jar", fs.read(fd).buffer.slice(0));
-                fs.close(fd);
-                resolve();
-              });
-            }),
-            new Promise(function(resolve, reject) {
-              fs.open("/midlet.jad", function(fd) {
-                processJAD(util.decodeUtf8(fs.read(fd)));
-                fs.close(fd);
-                resolve();
-              });
-            }),
-          ]).then(resolve);
-        } else {
-          var dialog = document.getElementById('download-progress-dialog').cloneNode(true);
-          dialog.style.display = 'block';
-          dialog.classList.add('visible');
-          document.body.appendChild(dialog);
-
-          performDownload(config.downloadJAD, dialog, function(data) {
-            dialog.parentElement.removeChild(dialog);
-
-            CLASSES.addPath("midlet.jar", data.jarData);
-            processJAD(data.jadData);
-
-            Promise.all([
-              new Promise(function(resolve, reject) {
-                fs.create("/midlet.jad", new Blob([ data.jadData ]), resolve);
-              }),
-              new Promise(function(resolve, reject) {
-                fs.create("/midlet.jar", new Blob([ data.jarData ]), resolve);
-              }),
-            ]).then(resolve);
-          });
+  loadingMIDletPromises.push(new Promise(function(resolve, reject) {
+    JARStore.loadJAR("midlet.jar").then(function(loaded) {
+      if (loaded) {
+        if (!document.hidden) {
+          // Show the splash screen as soon as possible.
+          showSplashScreen();
         }
+        processJAD(JARStore.getJAD());
+        resolve();
+        return;
+      }
+
+      performDownload(config.downloadJAD, function(data) {
+        if (!document.hidden) {
+          // Show the splash screen as soon as possible after showing
+          // the download screen while downloading the JAD/JAR files.
+          showSplashScreen();
+        }
+        JARStore.installJAR("midlet.jar", data.jarData, data.jadData).then(function() {
+          processJAD(data.jadData);
+          resolve();
+        });
       });
     });
-  }));
+  }).then(backgroundCheck));
 }
 
-if (MIDP.midletClassName == "RunTests") {
+var loadingFGPromises = [ emoji.loadData() ];
+
+if (jars.indexOf("tests/tests.jar") !== -1) {
   loadingPromises.push(loadScript("tests/native.js"),
-                       loadScript("tests/override.js"),
-                       loadScript("tests/mozactivitymock.js"));
+                       loadScript("tests/mozactivitymock.unprivileged.js"),
+                       loadScript("tests/config.js"));
 }
 
 function getIsOff(button) {
@@ -204,67 +152,212 @@ function toggle(button) {
 }
 
 var bigBang = 0;
+var profiling = false;
 
-function start() {
-  J2ME.Context.setWriters(new J2ME.IndentingWriter());
-  CLASSES.initializeBuiltinClasses();
-  profiler && profiler.start(2000, false);
-  bigBang = performance.now();
-  jvm.startIsolate0(main, config.args);
+function startTimeline() {
+  jsGlobal.START_TIME = performance.now();
+  jsGlobal.profiling = true;
+  requestTimelineBuffers(function (buffers) {
+    for (var i = 0; i < buffers.length; i++) {
+      buffers[i].reset(jsGlobal.START_TIME);
+    }
+    for (var runtime of J2ME.RuntimeTemplate.all) {
+      for (var ctx of runtime.allCtxs) {
+        ctx.restartMethodTimeline();
+      }
+    }
+  });
 }
 
-Promise.all(loadingPromises).then(start);
+function stopTimeline(cb) {
+  jsGlobal.profiling = false;
+  requestTimelineBuffers(function(buffers) {
+    // Some of the methods may have not exited yet. Leave them
+    // so they show up in the profile.
+    for (var i = 0; i < buffers.length; i++) {
+      while(buffers[i].depth > 0) {
+        buffers[i].leave();
+      }
+    }
+    cb(buffers);
+  });
+}
+
+function stopAndSaveTimeline() {
+  console.log("Saving profile, please wait ...");
+  var output = [];
+  var writer = new J2ME.IndentingWriter(false, function (s) {
+    output.push(s);
+  });
+  stopTimeline(function (buffers) {
+    var snapshots = [];
+    for (var i = 0; i < buffers.length; i++) {
+      snapshots.push(buffers[i].createSnapshot());
+    }
+    // Trace Statistics
+    for (var i = 0; i < snapshots.length; i++) {
+      writer.writeLn("Timeline Statistics: " + snapshots[i].name);
+      snapshots[i].traceStatistics(writer, 1); // Don't trace any totals below 1 ms.
+    }
+    // Trace Aggregate Method Statistics
+    writer.writeLn("Timeline Statistics: All Threads");
+    var methodSnapshots = snapshots.slice(2);
+    new Shumway.Tools.Profiler.TimelineBufferSnapshotSet(methodSnapshots).traceStatistics(writer, 1);
+    // Trace Events
+    for (var i = 0; i < snapshots.length; i++) {
+      writer.writeLn("Timeline Events: " + snapshots[i].name);
+      snapshots[i].trace(writer, 0.1); // Don't trace anything below 0.1 ms.
+    }
+  });
+  var text = output.join("\n");
+  var profileFilename = "profile.txt";
+  var blob = new Blob([text], {type : 'text/html'});
+  saveAs(blob, profileFilename);
+  console.log("Saved profile in: adb pull /sdcard/downloads/" + profileFilename);
+}
+
+function start() {
+  var deferStartup = config.deferStartup | 0;
+  if (deferStartup && typeof Benchmark !== "undefined") {
+    setTimeout(function () {
+      Benchmark.startup.setStartTime(performance.now());
+      run();
+    }, deferStartup);
+  } else {
+    run();
+  }
+  function run() {
+    J2ME.Context.setWriters(new J2ME.IndentingWriter());
+    // For profile mode 1, we start the profiler and wait 2 seconds and show the flame chart UI.
+    profile === 1 && profiler.start(2000, false);
+    bigBang = performance.now();
+    // For profiler mode 2, we start the timeline and stop it later by calling |stopAndSaveTimeline|.
+    profile === 2 && startTimeline();
+    jvm.startIsolate0(config.main, config.args);
+  }
+}
+
+// If we're not running a MIDlet, we need to wait everything to be loaded.
+if (!config.midletClassName || config.midletClassName == "RunTests") {
+  loadingPromises = loadingPromises.concat(loadingMIDletPromises);
+}
+
+Promise.all(loadingPromises).then(start, function (reason) {
+  console.error("Loading failed: \"" + reason + "\"");
+});
 
 document.getElementById("start").onclick = function() {
   start();
 };
 
-function loadAllClasses() {
-  profiler.start(5000, false);
-  for (var i = 0; i < 1; i++) {
-    var s = performance.now();
-    CLASSES.loadAllClassFiles();
-    console.info("Loaded all classes in: " + (performance.now() - s));
-  }
-}
+document.getElementById("canvasSize").onchange = function() {
+  Array.prototype.forEach.call(document.body.classList, function(c) {
+    if (c.indexOf('size-') == 0) {
+      document.body.classList.remove(c);
+    }
+  });
 
-document.getElementById("loadAllClasses").onclick = function() {
-  loadAllClasses();
+  if (this.value) {
+    document.body.classList.add(this.value);
+  }
+
+  MIDP.updatePhysicalScreenSize();
+  MIDP.updateCanvas();
+  start();
 };
 
+if (typeof Benchmark !== "undefined") {
+  Benchmark.initUI("benchmark");
+}
+
 window.onload = function() {
- document.getElementById("deleteDatabase").onclick = function() {
-   debugger;
-   indexedDB.deleteDatabase("asyncStorage");
+ document.getElementById("deleteDatabases").onclick = function() {
+   fs.deleteDatabase().then(function() {
+     console.log("Deleted fs database.");
+   }).catch(function(error) {
+     console.log("Error deleting fs database: " + error);
+   });
+
+   CompiledMethodCache.deleteDatabase().then(function() {
+     console.log("Deleted CompiledMethodCache database.");
+   }).catch(function(error) {
+     console.log("Error deleting CompiledMethodCache database: " + error);
+   });
+
+   JARStore.deleteDatabase().then(function() {
+     console.log("Deleted JARStore database.");
+   }).catch(function(error) {
+     console.log("Error deleting JARStore database: " + error);
+   });
  };
  document.getElementById("exportstorage").onclick = function() {
    fs.exportStore(function(blob) {
      saveAs(blob, "fs-" + Date.now() + ".json");
    });
  };
- document.getElementById("importstorage").addEventListener("change", function(event) {
-   fs.importStore(event.target.files[0], function() {
-     DumbPipe.close(DumbPipe.open("alert", "Import completed."));
-   });
- }, false);
- document.getElementById("trace").onclick = function() {
-   VM.DEBUG = !VM.DEBUG;
-   toggle(this);
+ document.getElementById("importstorage").onclick = function() {
+   function performImport(file) {
+     fs.importStore(file, function() {
+       DumbPipe.close(DumbPipe.open("alert", "Import completed."));
+     });
+   }
+
+   var file = document.getElementById("importstoragefile").files[0];
+   if (file) {
+     performImport(file);
+   } else {
+     load(document.getElementById("importstorageurl").value, "blob").then(function(blob) {
+       performImport(blob);
+     });
+   }
+ };
+ document.getElementById("clearCompiledMethodCache").onclick = function() {
+   CompiledMethodCache.clear().then(function() { console.log("cleared compiled method cache") });
  };
  document.getElementById("printAllExceptions").onclick = function() {
    VM.DEBUG_PRINT_ALL_EXCEPTIONS = !VM.DEBUG_PRINT_ALL_EXCEPTIONS;
    toggle(this);
  };
  document.getElementById("clearCounters").onclick = function() {
-   J2ME.runtimeCounter && J2ME.runtimeCounter.clear();
-   J2ME.nativeCounter && J2ME.nativeCounter.clear();
-   J2ME.interpreterCounter && J2ME.interpreterCounter.clear();
-   J2ME.interpreterMethodCounter && J2ME.interpreterMethodCounter.clear();
-   J2ME.baselineMethodCounter && J2ME.baselineMethodCounter.clear();
-
+   clearCounters();
  };
+
+  function numberWithCommas(x) {
+    return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  setInterval(function () {
+    var el = document.getElementById("bytecodeCount");
+    el.textContent = numberWithCommas(J2ME.bytecodeCount);
+
+    var el = document.getElementById("interpreterCount");
+    el.textContent = numberWithCommas(J2ME.interpreterCount);
+
+    var el = document.getElementById("compiledCount");
+    el.textContent = numberWithCommas(J2ME.compiledMethodCount) + "/" +
+                     numberWithCommas(J2ME.cachedMethodCount) + "/" +
+                     numberWithCommas(J2ME.aotMethodCount) + "/" +
+                     numberWithCommas(J2ME.notCompiledMethodCount);
+
+    var el = document.getElementById("onStackReplacementCount");
+    el.textContent = numberWithCommas(J2ME.onStackReplacementCount);
+
+    var el = document.getElementById("unwindCount");
+    el.textContent = numberWithCommas(J2ME.unwindCount);
+
+    var el = document.getElementById("preemptionCount");
+    el.textContent = numberWithCommas(J2ME.preemptionCount);
+
+  }, 500);
+
   function dumpCounters() {
     var writer = new J2ME.IndentingWriter();
+
+    writer.writeLn("Frame Count: " + J2ME.frameCount);
+    writer.writeLn("Unwind Count: " + J2ME.unwindCount);
+    writer.writeLn("Bytecode Count: " + J2ME.bytecodeCount);
+    writer.writeLn("OSR Count: " + J2ME.onStackReplacementCount);
+
     if (J2ME.interpreterCounter) {
       writer.enter("interpreterCounter");
       J2ME.interpreterCounter.traceSorted(writer);
@@ -280,6 +373,11 @@ window.onload = function() {
       J2ME.baselineMethodCounter.traceSorted(writer);
       writer.outdent();
     }
+    if (J2ME.baselineCounter) {
+      writer.enter("baselineCounter");
+      J2ME.baselineCounter.traceSorted(writer);
+      writer.outdent();
+    }
     if (J2ME.nativeCounter) {
       writer.enter("nativeCounter");
       J2ME.nativeCounter.traceSorted(writer);
@@ -290,12 +388,26 @@ window.onload = function() {
       J2ME.runtimeCounter.traceSorted(writer);
       writer.outdent();
     }
+    if (J2ME.asyncCounter) {
+      writer.enter("asyncCounter");
+      J2ME.asyncCounter.traceSorted(writer);
+      writer.outdent();
+    }
   }
   function clearCounters() {
+    J2ME.frameCount = 0;
+    J2ME.unwindCount = 0;
+    J2ME.bytecodeCount = 0;
+    J2ME.interpreterCount = 0;
+    J2ME.onStackReplacementCount = 0;
+
     J2ME.interpreterCounter && J2ME.interpreterCounter.clear();
     J2ME.interpreterMethodCounter && J2ME.interpreterMethodCounter.clear();
     J2ME.nativeCounter && J2ME.nativeCounter.clear();
     J2ME.runtimeCounter && J2ME.runtimeCounter.clear();
+    J2ME.asyncCounter && J2ME.asyncCounter.clear();
+    J2ME.baselineMethodCounter && J2ME.baselineMethodCounter.clear();
+    J2ME.baselineCounter && J2ME.baselineCounter.clear();
   }
 
   document.getElementById("dumpCounters").onclick = function() {
@@ -324,29 +436,21 @@ window.onload = function() {
     }
     setTimeout(sample, 2000); // Wait 2s before starting.
   };
- document.getElementById("profile").onclick = function() {
-   if (getIsOff(this)) {
-     Instrument.startProfile();
-   } else {
-     Instrument.stopProfile();
-   }
-   toggle(this);
- };
- if (Instrument.profiling) {
-   toggle(document.getElementById("profile"));
- }
 };
-
-if (config.profile && !/no|0/.test(config.profile)) {
-  Instrument.startProfile();
-}
 
 function requestTimelineBuffers(fn) {
   if (J2ME.timeline) {
-    fn([
+    // If you change the position at which method timelines begin in this array,
+    // then also update the method timeline aggregation in stopAndSaveTimeline.
+    var activeTimeLines = [
+      J2ME.threadTimeline,
       J2ME.timeline,
-      J2ME.methodTimeline
-    ]);
+    ];
+    var methodTimeLines = J2ME.methodTimelines;
+    for (var i = 0; i < methodTimeLines.length; i++) {
+      activeTimeLines.push(methodTimeLines[i]);
+    }
+    fn(activeTimeLines);
     return;
   }
   return fn([]);
@@ -363,17 +467,17 @@ perfWriterCheckbox.addEventListener('change', function() {
   }
 });
 
-
-var profiler = typeof Shumway !== "undefined" ? (function() {
+var profiler = profile === 1 ? (function() {
 
   var elPageContainer = document.getElementById("pageContainer");
   elPageContainer.classList.add("profile-mode");
 
+  var elProfilerContainer = document.getElementById("profilerContainer");
   var elProfilerToolbar = document.getElementById("profilerToolbar");
   var elProfilerMessage = document.getElementById("profilerMessage");
   var elProfilerPanel = document.getElementById("profilePanel");
-  var elBtnMinimize = document.getElementById("profilerMinimizeButton");
   var elBtnStartStop = document.getElementById("profilerStartStop");
+  var elBtnAdjustHeight = document.getElementById("profilerAdjustHeight");
 
   var controller;
   var startTime;
@@ -383,6 +487,7 @@ var profiler = typeof Shumway !== "undefined" ? (function() {
   var Profiler = function() {
     controller = new Shumway.Tools.Profiler.Controller(elProfilerPanel);
     elBtnStartStop.addEventListener("click", this._onStartStopClick.bind(this));
+    elBtnAdjustHeight.addEventListener("click", this._onAdjustHeightClick.bind(this));
 
     var self = this;
     window.addEventListener("keypress", function (event) {
@@ -393,12 +498,7 @@ var profiler = typeof Shumway !== "undefined" ? (function() {
   }
 
   Profiler.prototype.start = function(maxTime, resetTimelines) {
-    window.profile = true;
-    requestTimelineBuffers(function (buffers) {
-      for (var i = 0; i < buffers.length; i++) {
-        buffers[i].reset();
-      }
-    });
+    startTimeline();
     controller.deactivateProfile();
     maxTime = maxTime || 0;
     elProfilerToolbar.classList.add("withEmphasis");
@@ -412,7 +512,7 @@ var profiler = typeof Shumway !== "undefined" ? (function() {
   }
 
   Profiler.prototype.createProfile = function() {
-    requestTimelineBuffers(function (buffers) {
+    stopTimeline(function (buffers) {
       controller.createProfile(buffers);
       elProfilerToolbar.classList.remove("withEmphasis");
       elBtnStartStop.textContent = "Start";
@@ -420,7 +520,6 @@ var profiler = typeof Shumway !== "undefined" ? (function() {
       clearTimeout(timeoutHandle);
       timerHandle = 0;
       timeoutHandle = 0;
-      window.profile = false;
       showTimeMessage(false);
     });
   }
@@ -436,6 +535,10 @@ var profiler = typeof Shumway !== "undefined" ? (function() {
   Profiler.prototype.resize = function() {
     controller.resize();
   }
+
+  Profiler.prototype._onAdjustHeightClick = function(e) {
+    elProfilerContainer.classList.toggle("max");
+  };
 
   Profiler.prototype._onMinimizeClick = function(e) {
     if (elProfilerContainer.classList.contains("collapsed")) {

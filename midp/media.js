@@ -69,6 +69,11 @@ Media.extToFormat = new Map([
     ["jpg", "JPEG"],
     ["jpeg", "JPEG"],
     ["png", "PNG"],
+    ["wav", "wav"],
+    ["ogg", "ogg"],
+    ["mp4", "MPEG4"],
+    ["webm", "WebM"],
+    ["amr", "amr"],
 ]);
 
 Media.contentTypeToFormat = new Map([
@@ -78,10 +83,18 @@ Media.contentTypeToFormat = new Map([
     ["audio/mpeg", "MPEG_layer_3"],
     ["image/jpeg", "JPEG"],
     ["image/png", "PNG"],
+    ["video/mp4", "MPEG4"],
+    ["video/webm", "WebM"],
 ]);
+
+Media.formatToContentType = new Map();
+for (var elem of Media.contentTypeToFormat) {
+    Media.formatToContentType.set(elem[1], elem[0])
+}
 
 Media.supportedAudioFormats = ["MPEG_layer_3", "wav", "amr", "ogg"];
 Media.supportedImageFormats = ["JPEG", "PNG"];
+Media.supportedVideoFormats = ["MPEG4", "WebM"];
 
 Media.EVENT_MEDIA_END_OF_MEDIA = 1;
 Media.EVENT_MEDIA_SNAPSHOT_FINISHED = 11;
@@ -121,7 +134,7 @@ Media.convert3gpToAmr = function(inBuffer) {
 };
 
 Native["com/sun/mmedia/DefaultConfiguration.nListContentTypesOpen.(Ljava/lang/String;)I"] = function(jProtocol) {
-    var protocol = util.fromJavaString(jProtocol);
+    var protocol = J2ME.fromJavaString(jProtocol);
     var types = [];
     if (protocol) {
         types = Media.ContentTypes[protocol].slice();
@@ -159,7 +172,7 @@ Native["com/sun/mmedia/DefaultConfiguration.nListContentTypesClose.(I)V"] = func
 };
 
 Native["com/sun/mmedia/DefaultConfiguration.nListProtocolsOpen.(Ljava/lang/String;)I"] = function(jMime) {
-    var mime = util.fromJavaString(jMime);
+    var mime = J2ME.fromJavaString(jMime);
     var protocols = [];
     for (var protocol in Media.ContentTypes) {
         if (!mime || Media.ContentTypes[protocol].indexOf(mime) >= 0) {
@@ -192,8 +205,33 @@ Media.PlayerCache = {
 function AudioPlayer(playerContainer) {
     this.playerContainer = playerContainer;
 
-    /* @type HTMLAudioElement */
-    this.audio = new Audio();
+    this.messageHandlers = {
+        mediaTime: [],
+        duration: []
+    };
+
+    this.sender = DumbPipe.open("audioplayer", {}, function(message) {
+        switch (message.type) {
+            case "end":
+                MIDP.sendEndOfMediaEvent(this.playerContainer.pId, message.duration);
+                break;
+            case "mediaTime": // fall through
+            case "duration":
+                var f = this.messageHandlers[message.type].shift();
+                if (f) {
+                    f(message.data);
+                }
+                break;
+            default:
+                console.error("Unknown audioplayer message type: " + message.type)
+                break;
+        }
+    }.bind(this));
+
+    this.paused = true;
+    this.loaded = false;
+    this.volume = 100;
+    this.muted = false;
 
     this.isVideoControlSupported = false;
     this.isVolumeControlSupported = true;
@@ -203,76 +241,68 @@ AudioPlayer.prototype.realize = function() {
     return Promise.resolve(1);
 };
 
-AudioPlayer.prototype.play = function() {
-    this.audio.play();
-    this.audio.onended = function() {
-        MIDP.sendNativeEvent({
-            type: MIDP.MMAPI_EVENT,
-            intParam1: this.playerContainer.pId,
-            intParam2: this.getDuration(),
-            intParam3: 0,
-            intParam4: Media.EVENT_MEDIA_END_OF_MEDIA
-        }, MIDP.foregroundIsolateId);
-    }.bind(this);
-};
-
 AudioPlayer.prototype.start = function() {
     if (this.playerContainer.contentSize == 0) {
         console.warn("Cannot start playing.");
         return;
     }
 
-    if (this.audio.src) {
-        this.play();
-        return;
+    var array = null;
+    if (!this.loaded) {
+        var data = this.playerContainer.data.subarray(0, this.playerContainer.contentSize);
+        // Convert the data to a regular Array to traverse the mozbrowser boundary.
+        var array = Array.prototype.slice.call(data);
+        array.constructor = Array;
+        this.loaded = true;
     }
-
-    new Promise(function(resolve, reject) {
-        var blob = new Blob([ this.playerContainer.data.subarray(0, this.playerContainer.contentSize) ],
-                            { type: this.playerContainer.contentType });
-        this.audio.src = URL.createObjectURL(blob);
-        this.audio.onloadedmetadata = function() {
-            resolve();
-            this.play();
-        }.bind(this);
-        this.audio.onerror = reject;
-    }.bind(this)).done(function() {
-        URL.revokeObjectURL(this.audio.src);
-    }.bind(this));
+    this.sender({
+        type: "start",
+        contentType: this.playerContainer.contentType,
+        data: array
+    });
+    this.paused = false;
 };
 
 AudioPlayer.prototype.pause = function() {
-    if (this.audio.paused) {
+    if (this.paused) {
         return;
     }
-    this.audio.onended = null;
-    this.audio.pause();
+    this.sender({ type: "pause" });
+    this.paused = true;
 };
 
 AudioPlayer.prototype.resume = function() {
-    if (!this.audio.paused) {
+    if (!this.paused) {
         return;
     }
-    this.play();
+    this.sender({ type: "play" });
+    this.paused = false;
 };
 
 AudioPlayer.prototype.close = function() {
-    this.audio.pause();
-    this.audio.src = "";
+    this.sender({ type: "close" });
+    this.paused = true;
+    this.loaded = false;
+    DumbPipe.close(this.sender);
 };
 
 AudioPlayer.prototype.getMediaTime = function() {
-    return Math.round(this.audio.currentTime * 1000);
+    return new Promise(function(resolve, reject) {
+        this.sender({ type: "getMediaTime" });
+        this.messageHandlers.mediaTime.push(function(data) {
+            resolve(data);
+        });
+    }.bind(this));
 };
 
 // The range of ms has already been checked, we don't need to check it again.
 AudioPlayer.prototype.setMediaTime = function(ms) {
-    this.audio.currentTime = ms / 1000;
+    this.sender({ type: "setMediaTime", data: ms });
     return ms;
 };
 
 AudioPlayer.prototype.getVolume = function() {
-    return Math.floor(this.audio.volume * 100);
+    return this.volume;
 };
 
 AudioPlayer.prototype.setVolume = function(level) {
@@ -281,20 +311,27 @@ AudioPlayer.prototype.setVolume = function(level) {
     } else if (level > 100) {
         level = 100;
     }
-    this.audio.volume = level / 100;
+    this.sender({ type: "setVolume", data: level });
+    this.volume = level;
     return level;
 };
 
 AudioPlayer.prototype.getMute = function() {
-    return this.audio.muted;
+    return this.muted;
 };
 
 AudioPlayer.prototype.setMute = function(mute) {
-    this.audio.muted = mute;
+    this.muted = mute;
+    this.sender({ type: "setMute", data: mute });
 };
 
 AudioPlayer.prototype.getDuration = function() {
-    return Math.round(this.audio.duration * 1000);
+    return new Promise(function(resolve, reject) {
+        this.sender({ type: "getDuration" });
+        this.messageHandlers.duration.push(function(data) {
+            resolve(data);
+        });
+    }.bind(this));
 };
 
 function ImagePlayer(playerContainer) {
@@ -309,8 +346,6 @@ function ImagePlayer(playerContainer) {
 }
 
 ImagePlayer.prototype.realize = function() {
-    var objectUrl;
-
     var ctx = $.ctx;
 
     var p = new Promise((function(resolve, reject) {
@@ -321,23 +356,20 @@ ImagePlayer.prototype.realize = function() {
         };
 
         if (this.url.startsWith("file")) {
-            fs.open(this.url.substring(7), (function(fd) {
-                var imgData = fs.read(fd);
-                fs.close(fd);
-                this.image.src = URL.createObjectURL(new Blob([ imgData ]));
-                objectUrl = this.image.src;
-            }).bind(this));
+            this.image.src = URL.createObjectURL(fs.getBlob(this.url.substring(7)));
         } else {
             this.image.src = this.url;
         }
     }).bind(this));
 
-    p.done(function() {
-        if (!objectUrl) {
+    p.catch(function() {
+      // Ignore promise rejection, we only need to revoke the object URL
+    }).then((function() {
+        if (!this.image.src) {
             return;
         }
-        URL.revokeObjectURL(objectUrl);
-    });
+        URL.revokeObjectURL(this.image.src);
+    }).bind(this));
 
     return p;
 }
@@ -350,7 +382,7 @@ ImagePlayer.prototype.pause = function() {
 
 ImagePlayer.prototype.close = function() {
     if (this.image.parentNode) {
-        document.getElementById("display").removeChild(this.image);
+        this.image.parentNode.removeChild(this.image);
     }
 }
 
@@ -371,12 +403,125 @@ ImagePlayer.prototype.setLocation = function(x, y, w, h) {
     this.image.style.top = y + "px";
     this.image.style.width = w + "px";
     this.image.style.height = h + "px";
-    document.getElementById("display").appendChild(this.image);
+    document.getElementById("main").appendChild(this.image);
 }
 
 ImagePlayer.prototype.setVisible = function(visible) {
     this.image.style.visibility = visible ? "visible" : "hidden";
 }
+
+function VideoPlayer(playerContainer) {
+    this.playerContainer = playerContainer;
+
+    this.video = document.createElement("video");
+    this.video.style.position = "absolute";
+    this.video.style.visibility = "hidden";
+
+    this.isVideoControlSupported = true;
+    this.isVolumeControlSupported = true;
+
+    // VideoPlayer::start could be called while the video element
+    // is hidden, causing the call to HTMLVideoElement::play to be
+    // ignored.
+    // Thus, we need to call HTMLVideoElement::play when the element
+    // gets visible.
+    this.isPlaying = false;
+}
+
+VideoPlayer.prototype.realize = function() {
+    var ctx = $.ctx;
+
+    var p = new Promise((function(resolve, reject) {
+        this.video.addEventListener("canplay", (function onCanPlay() {
+            this.video.removeEventListener("canplay", onCanPlay);
+            resolve(1);
+        }).bind(this));
+
+        this.video.onerror = function() {
+            ctx.setAsCurrentContext();
+            reject($.newMediaException("Failed to load video"));
+        };
+
+        if (this.playerContainer.url.startsWith("file")) {
+            this.video.src = URL.createObjectURL(fs.getBlob(this.playerContainer.url.substring(7)),
+                                                 { type: this.playerContainer.contentType });
+        } else {
+            this.video.src = this.playerContainer.url;
+        }
+    }).bind(this));
+
+    p.catch(function() {
+      // Ignore promise rejection, we only need to revoke the object URL
+    }).then((function() {
+        if (!this.video.src) {
+            return;
+        }
+        URL.revokeObjectURL(this.video.src);
+    }).bind(this));
+
+    return p;
+}
+
+VideoPlayer.prototype.start = function() {
+    if (this.video.style.visibility === "hidden") {
+        this.isPlaying = true;
+    } else {
+        this.video.play();
+    }
+}
+
+VideoPlayer.prototype.pause = function() {
+    this.video.pause();
+    this.isPlaying = false;
+}
+
+VideoPlayer.prototype.close = function() {
+    if (this.video.parentNode) {
+        this.video.parentNode.removeChild(this.video);
+    }
+    this.pause();
+}
+
+VideoPlayer.prototype.getMediaTime = function() {
+    return Math.round(this.video.currentTime * 1000);
+}
+
+VideoPlayer.prototype.getWidth = function() {
+    return this.video.videoWidth;
+}
+
+VideoPlayer.prototype.getHeight = function() {
+    return this.video.videoHeight;
+}
+
+VideoPlayer.prototype.setLocation = function(x, y, w, h) {
+    this.video.style.left = x + "px";
+    this.video.style.top = y + "px";
+    this.video.style.width = w + "px";
+    this.video.style.height = h + "px";
+    document.getElementById("main").appendChild(this.video);
+}
+
+VideoPlayer.prototype.setVisible = function(visible) {
+    this.video.style.visibility = visible ? "visible" : "hidden";
+    if (visible && this.isPlaying) {
+        this.video.play();
+    }
+}
+
+VideoPlayer.prototype.getVolume = function() {
+    return Math.floor(this.video.volume * 100);
+};
+
+VideoPlayer.prototype.setVolume = function(level) {
+    if (level < 0) {
+        level = 0;
+    } else if (level > 100) {
+        level = 100;
+    }
+    this.video.volume = level / 100;
+    return level;
+};
 
 function ImageRecorder(playerContainer) {
     this.playerContainer = playerContainer;
@@ -404,9 +549,9 @@ ImageRecorder.prototype.realize = function() {
 }
 
 ImageRecorder.prototype.recipient = function(message) {
-    this.ctx.setAsCurrentContext();
     switch (message.type) {
         case "initerror":
+            this.ctx.setAsCurrentContext();
             if (message.name == "PermissionDeniedError") {
                 this.realizeRejector($.newSecurityException("Not permitted to init camera"));
             } else {
@@ -427,15 +572,7 @@ ImageRecorder.prototype.recipient = function(message) {
 
         case "snapshot":
             this.snapshotData = new Int8Array(message.data);
-
-            MIDP.sendNativeEvent({
-                type: MIDP.MMAPI_EVENT,
-                intParam1: this.playerContainer.pId,
-                intParam2: 0,
-                intParam3: 0,
-                intParam4: Media.EVENT_MEDIA_SNAPSHOT_FINISHED,
-            }, MIDP.foregroundIsolateId);
-
+            MIDP.sendMediaSnapshotFinishedEvent(this.playerContainer.pId);
             break;
     }
 }
@@ -463,11 +600,11 @@ ImageRecorder.prototype.getHeight = function() {
 }
 
 ImageRecorder.prototype.setLocation = function(x, y, w, h) {
-    var displayElem = document.getElementById("display");
+    var displayContainer = document.getElementById("display-container");
     this.sender({
         type: "setPosition",
-        x: x + displayElem.offsetLeft,
-        y: y + displayElem.offsetTop,
+        x: x + displayContainer.offsetLeft,
+        y: y + displayContainer.offsetTop,
         w: w,
         h: h,
     });
@@ -557,6 +694,8 @@ PlayerContainer.prototype.realize = function(contentType) {
                 resolve(0);
                 return;
             }
+        } else {
+            this.contentType = Media.formatToContentType.get(this.mediaFormat);
         }
 
         if (Media.supportedAudioFormats.indexOf(this.mediaFormat) !== -1) {
@@ -571,6 +710,9 @@ PlayerContainer.prototype.realize = function(contentType) {
             } else {
                 this.player = new ImagePlayer(this);
             }
+            this.player.realize().then(resolve, reject);
+        } else if (Media.supportedVideoFormats.indexOf(this.mediaFormat) !== -1) {
+            this.player = new VideoPlayer(this);
             this.player.realize().then(resolve, reject);
         } else {
             console.warn("Unsupported media format (" + this.mediaFormat + ") for " + this.url);
@@ -647,7 +789,7 @@ PlayerContainer.prototype.isVolumeControlSupported = function() {
 
 PlayerContainer.prototype.writeBuffer = function(buffer) {
     if (this.contentSize === 0) {
-        this.data = util.newPrimitiveArray("B", this.getBufferSize());
+        this.data = J2ME.newByteArray(this.getBufferSize());
     }
 
     this.data.set(buffer, this.contentSize);
@@ -705,7 +847,7 @@ PlayerContainer.prototype.getRecordedSize = function() {
 PlayerContainer.prototype.getRecordedData = function(offset, size, buffer) {
     var toRead = (size < this.audioRecorder.data.length) ? size : this.audioRecorder.data.byteLength;
     buffer.set(this.audioRecorder.data.subarray(0, toRead), offset);
-    this.audioRecorder.data = new Uint8Array(this.audioRecorder.data.buffer.slice(toRead));
+    this.audioRecorder.data = new Int8Array(this.audioRecorder.data.buffer.slice(toRead));
 };
 
 PlayerContainer.prototype.startSnapshot = function(imageType) {
@@ -723,7 +865,7 @@ PlayerContainer.prototype.getDuration = function() {
 var AudioRecorder = function(aMimeType) {
     this.mimeType = aMimeType || "audio/3gpp";
     this.eventListeners = {};
-    this.data = new Uint8Array();
+    this.data = new Int8Array();
     this.sender = DumbPipe.open("audiorecorder", {
         mimeType: this.mimeType
     }, this.recipient.bind(this));
@@ -807,7 +949,7 @@ AudioRecorder.prototype.stop = function() {
             // The audio data we received are encoded with a proper format, it doesn't
             // make sense to concatenate them like the socket, so let just override
             // the buffered data here.
-            var data = new Uint8Array(message.data);
+            var data = new Int8Array(message.data);
             if (this.getContentType() === "audio/amr") {
                 data = Media.convert3gpToAmr(data);
             }
@@ -845,7 +987,7 @@ AudioRecorder.prototype.pause = function() {
             // The audio data we received are encoded with a proper format, it doesn't
             // make sense to concatenate them like the socket, so let just override
             // the buffered data here.
-            this.data = new Uint8Array(message.data);
+            this.data = new Int8Array(message.data);
             resolve(1);
         }.bind(this);
 
@@ -861,18 +1003,19 @@ AudioRecorder.prototype.requestData = function() {
 
 AudioRecorder.prototype.close = function() {
     if (this._closed) {
-        return new Promise(function(resolve) { resolve(1); });
+        return Promise.resolve(1);
     }
 
     // Make sure recording is stopped on the other side.
-    return this.stop().then(function() {
+    return this.stop().then(function(result) {
         DumbPipe.close(this.sender);
         this._closed = true;
+        return result;
     }.bind(this));
 };
 
 Native["com/sun/mmedia/PlayerImpl.nInit.(IILjava/lang/String;)I"] = function(appId, pId, jURI) {
-    var url = util.fromJavaString(jURI);
+    var url = J2ME.fromJavaString(jURI);
     var id = pId + (appId << 32);
     Media.PlayerCache[id] = new PlayerContainer(url, pId);
     return id;
@@ -906,7 +1049,7 @@ Native["com/sun/mmedia/PlayerImpl.nIsHandledByDevice.(I)Z"] = function(handle) {
 };
 
 Native["com/sun/mmedia/PlayerImpl.nRealize.(ILjava/lang/String;)Z"] = function(handle, jMime) {
-    var mime = util.fromJavaString(jMime);
+    var mime = J2ME.fromJavaString(jMime);
     var player = Media.PlayerCache[handle];
     asyncImpl("Z", player.realize(mime));
 };
@@ -918,7 +1061,7 @@ Native["com/sun/mmedia/MediaDownload.nGetJavaBufferSize.(I)I"] = function(handle
 
 Native["com/sun/mmedia/MediaDownload.nGetFirstPacketSize.(I)I"] = function(handle) {
     var player = Media.PlayerCache[handle];
-    return player.getBufferSize() / 2;
+    return player.getBufferSize() >>> 1;
 };
 
 Native["com/sun/mmedia/MediaDownload.nBuffering.(I[BII)I"] = function(handle, buffer, offset, size) {
@@ -927,13 +1070,13 @@ Native["com/sun/mmedia/MediaDownload.nBuffering.(I[BII)I"] = function(handle, bu
 
     // Check the parameters.
     if (buffer === null || size === 0) {
-        return bufferSize / 2;
+        return bufferSize >>> 1;
     }
 
     player.writeBuffer(buffer.subarray(offset, offset + size));
 
     // Returns the package size and set it to the half of the java buffer size.
-    return bufferSize / 2;
+    return bufferSize >>> 1;
 };
 
 Native["com/sun/mmedia/MediaDownload.nNeedMoreDataImmediatelly.(I)Z"] = function(handle) {
@@ -941,9 +1084,9 @@ Native["com/sun/mmedia/MediaDownload.nNeedMoreDataImmediatelly.(I)Z"] = function
     return 1;
 };
 
-Native["com/sun/mmedia/MediaDownload.nSetWholeContentSize.(IJ)V"] = function(handle, contentSize) {
+Native["com/sun/mmedia/MediaDownload.nSetWholeContentSize.(IJ)V"] = function(handle, contentSizeLow, contentSizeHigh) {
     var player = Media.PlayerCache[handle];
-    player.wholeContentSize = contentSize.toNumber();
+    player.wholeContentSize = J2ME.longToNumber(contentSizeLow, contentSizeHigh);
 };
 
 Native["com/sun/mmedia/DirectPlayer.nIsToneControlSupported.(I)Z"] = function(handle) {
@@ -1011,12 +1154,17 @@ Native["com/sun/mmedia/DirectPlayer.nPrefetch.(I)Z"] = function(handle) {
 
 Native["com/sun/mmedia/DirectPlayer.nGetMediaTime.(I)I"] = function(handle) {
     var player = Media.PlayerCache[handle];
-    return player.getMediaTime();
+    var mediaTime = player.getMediaTime();
+    if (mediaTime instanceof Promise) {
+        asyncImpl("I", mediaTime);
+    } else {
+        return mediaTime;
+    }
 };
 
-Native["com/sun/mmedia/DirectPlayer.nSetMediaTime.(IJ)I"] = function(handle, ms) {
+Native["com/sun/mmedia/DirectPlayer.nSetMediaTime.(IJ)I"] = function(handle, msLow, msHigh) {
     var container = Media.PlayerCache[handle];
-    return container.player.setMediaTime(ms);
+    return container.player.setMediaTime(J2ME.longToNumber(msLow, msHigh));
 };
 
 Native["com/sun/mmedia/DirectPlayer.nStart.(I)Z"] = function(handle) {
@@ -1073,7 +1221,12 @@ Native["com/sun/mmedia/DirectPlayer.nIsRecordControlSupported.(I)Z"] = function(
 };
 
 Native["com/sun/mmedia/DirectPlayer.nGetDuration.(I)I"] = function(handle) {
-    return Media.PlayerCache[handle].getDuration();
+    var duration = Media.PlayerCache[handle].getDuration();
+    if (duration instanceof Promise) {
+        asyncImpl("I", duration);
+    } else {
+        return duration;
+    }
 };
 
 Native["com/sun/mmedia/DirectRecord.nSetLocator.(ILjava/lang/String;)I"] = function(handle, locator) {
@@ -1097,11 +1250,11 @@ Native["com/sun/mmedia/DirectRecord.nCommit.(I)I"] = function(handle) {
 };
 
 Native["com/sun/mmedia/DirectRecord.nPause.(I)I"] = function(handle) {
-    return asyncImpl("I", Media.PlayerCache[handle].audioRecorder.pause());
+    asyncImpl("I", Media.PlayerCache[handle].audioRecorder.pause());
 };
 
 Native["com/sun/mmedia/DirectRecord.nStop.(I)I"] = function(handle) {
-    return asyncImpl("I", Media.PlayerCache[handle].audioRecorder.stop());
+    asyncImpl("I", Media.PlayerCache[handle].audioRecorder.stop());
 };
 
 Native["com/sun/mmedia/DirectRecord.nClose.(I)I"] = function(handle) {
@@ -1261,7 +1414,7 @@ Native["com/sun/mmedia/NativeTonePlayer.nStopTone.(I)Z"] = function(appId) {
 };
 
 Native["com/sun/mmedia/DirectPlayer.nStartSnapshot.(ILjava/lang/String;)V"] = function(handle, imageType) {
-    Media.PlayerCache[handle].startSnapshot(util.fromJavaString(imageType));
+    Media.PlayerCache[handle].startSnapshot(J2ME.fromJavaString(imageType));
 };
 
 Native["com/sun/mmedia/DirectPlayer.nGetSnapshotData.(I)[B"] = function(handle) {
@@ -1286,3 +1439,5 @@ Native["com/sun/amms/directcontrol/DirectVolumeControl.nGetLevel.()I"] = functio
     console.warn("com/sun/amms/directcontrol/DirectVolumeControl.nGetLevel.()I not implemented.");
     return 100;
 };
+
+addUnimplementedNative("com/sun/amms/directcontrol/DirectVolumeControl.nIsMuted.()Z", 0);

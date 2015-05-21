@@ -1,7 +1,24 @@
-///<reference path='build/j2me.d.ts' />
+///<reference path='bld/j2me-jsc.d.ts' />
 
 var jsGlobal = (function() { return this || (1, eval)('this'); })();
+
+if (!jsGlobal.performance) {
+  jsGlobal.performance = {};
+}
+
+if (!jsGlobal.performance.now) {
+  jsGlobal.performance.now = typeof dateNow !== 'undefined' ? dateNow : Date.now;
+}
+
+declare var load: (string) => void;
+
+load("libs/relooper.js"); // Load before we polyfill the window object.
+load("libs/native.js"); // Load before we polyfill the window object.
+
 var CC = {};
+
+// Define objects and functions that j2me.js expects
+// but are unavailable in the shell environment.
 
 jsGlobal.window = {
   setZeroTimeout: function(callback) {
@@ -52,9 +69,11 @@ jsGlobal.config = {
   args: "",
 };
 
+jsGlobal.Promise = function() {
+}
+
 module J2ME {
-  declare var load: (string) => void;
-  declare var process, require, global, quit, help, scriptArgs, arguments, snarf;
+  declare var process, require, global, quit, help, scriptArgs, arguments, snarf, ZipFile, JARStore;
 
   var isNode = typeof process === 'object';
   var writer: IndentingWriter;
@@ -66,11 +85,7 @@ module J2ME {
     }
   }
 
-  loadFiles("libs/zipfile.js", "blackBox.js", "build/j2me.js",
-    "libs/encoding.js", "util.js",
-    "instrument.js",
-    "override.js", "native.js", "string.js", "midp/midp.js",
-    "libs/long.js", "midp/crypto.js", "libs/forge/md5.js", "libs/forge/util.js");
+  loadFiles("libs/long.js", "blackBox.js", "bld/j2me-jsc.js", "libs/zipfile.js", "libs/jarstore.js", "libs/encoding.js", "util.js");
 
   phase = ExecutionPhase.Compiler;
 
@@ -87,7 +102,6 @@ module J2ME {
   var fileFilterOption: Options.Option;
   var debuggerOption: Options.Option;
   var releaseOption: Options.Option;
-  var definitionOption: Options.Option;
 
 
   function main(commandLineArguments: string []) {
@@ -108,7 +122,6 @@ module J2ME {
     fileFilterOption = shellOptions.register(new Options.Option("ff", "fileFilter", "string", ".*", "Compile File Filter"));
     debuggerOption = shellOptions.register(new Options.Option("d", "debugger", "boolean", false, "Emit Debug Information"));
     releaseOption = shellOptions.register(new Options.Option("r", "release", "boolean", false, "Release mode"));
-    definitionOption = shellOptions.register(new Options.Option("t", "definition", "boolean", false, "Emit Definition"));
 
     var argumentParser = new Options.ArgumentParser();
     argumentParser.addBoundOptionSet(shellOptions);
@@ -171,7 +184,8 @@ module J2ME {
       quit();
     }
 
-    release = releaseOption.value;
+    var jarFiles = Object.create(null);
+
     var jvm = new JVM();
     for (var i = 0; i < files.length; i++) {
       var file = files[i];
@@ -179,11 +193,12 @@ module J2ME {
         if (verboseOption.value) {
           writer.writeLn("Loading: " + file);
         }
-        CLASSES.addPath(file, snarf(file, "binary").buffer);
+        var data = snarf(file, "binary").buffer
+        JARStore.addBuiltIn(file, data);
+        jarFiles[file] = new ZipFile(data);
       }
     }
     CLASSES.initializeBuiltinClasses();
-    Bytecode.defineBytecodes();
     if (verboseOption.value) {
       writer.writeLn("Compiling Pattern: " + classFilterOption.value + " " + classFileFilterOption.value + " " + methodFileFilterOption.value);
     }
@@ -199,7 +214,7 @@ module J2ME {
         classNameList = file.replace(/\r?\n/g, "\n").split("\n");
       }
     }
-    var methodNameList;
+    var methodFilterList = null;
     if (methodFileFilterOption.value) {
       var file;
       try {
@@ -208,7 +223,16 @@ module J2ME {
 
       }
       if (file) {
-        methodNameList = file.replace(/\r?\n/g, "\n").split("\n");
+        methodFilterList = [];
+        var lines = file.replace(/\r?\n/g, "\n").split("\n");
+        for (var i = 0; i < lines.length; i++) {
+          // Trim Whitespace
+          var line = lines[i].replace(/^\s+|\s+$/g, "");
+          if (line === "") {
+            continue;
+          }
+          methodFilterList.push(line);
+        }
       }
     }
 
@@ -220,23 +244,28 @@ module J2ME {
     }
     function classFilter(classInfo: ClassInfo): boolean {
       if (classNameList) {
-        return classNameList.indexOf(classInfo.className) >= 0;
+        return classNameList.indexOf(classInfo.getClassNameSlow()) >= 0;
       } else if (classFilterOption.value) {
-        return !!classInfo.className.match(classFilterOption.value);
+        return !!classInfo.getClassNameSlow().match(classFilterOption.value);
       }
       return false;
     }
-    function methodFilter(methodInfo: MethodInfo): boolean {
-      if (methodNameList) {
-        return methodNameList.indexOf(methodInfo.implKey) >= 0;
-      } else if (!methodFilterOption.value) {
-        return true;
-      }
-      return methodInfo.implKey === methodFilterOption.value;
+    if (methodFilterOption.value) {
+      methodFilterList = [methodFilterOption.value];
     }
-    compile(jvm, jarFilter, classFilter, methodFilter, fileFilterOption.value, debuggerOption.value, definitionOption.value);
+
+    stdoutWriter.writeLn("var start = performance.now();");
+    compile(jvm, jarFiles, jarFilter, classFilter, methodFilterList, fileFilterOption.value, debuggerOption.value);
+    stdoutWriter.writeLn("console.log(\"Loaded " + jarFileFilterOption.value + " in \" + (performance.now() - start).toFixed(2) + \" ms.\");");
+    if (methodFilterList !== null && methodFilterList.length) {
+      stderrWriter.enter("The following method(s) in the method filter list failed to compile or were not found:");
+      for (var i = 0; i < methodFilterList.length; i++) {
+        stderrWriter.errorLn(methodFilterList[i]);
+      }
+      stderrWriter.leave("");
+    }
     if (verboseOption.value) {
-      printResults();
+      // ...
     }
   }
 

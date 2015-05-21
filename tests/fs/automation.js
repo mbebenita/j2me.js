@@ -7,9 +7,13 @@ casper.on('remote.message', function(message) {
     this.echo(message);
 });
 
-casper.options.waitTimeout = 30000;
+casper.options.waitTimeout = 60000;
 casper.options.verbose = true;
-casper.options.logLevel = "debug";
+
+casper.options.onWaitTimeout = function() {
+    this.echo("data:image/png;base64," + this.captureBase64('png'));
+    this.test.fail("Timeout");
+};
 
 casper.test.begin("fs tests", 7, function(test) {
     // The main test automation script already initializes the fs database
@@ -50,7 +54,7 @@ casper.test.begin("fs tests", 7, function(test) {
     casper
     .thenOpen("http://localhost:8000/tests/fs/fstests.html")
     .waitForText("DONE", function() {
-        test.assertTextExists("DONE: 138 pass, 0 fail", "run fs.js unit tests");
+        test.assertTextExists("DONE: 137 pass, 0 fail", "run fs.js unit tests");
     });
 
     casper
@@ -73,7 +77,7 @@ casper.test.begin("fs tests", 7, function(test) {
     casper
     .thenOpen("http://localhost:8000/tests/fs/fstests.html")
     .waitForText("DONE", function() {
-        test.assertTextExists("DONE: 138 pass, 0 fail", "run fs.js unit tests");
+        test.assertTextExists("DONE: 137 pass, 0 fail", "run fs.js unit tests");
     });
 
     casper
@@ -96,12 +100,12 @@ casper.test.begin("fs tests", 7, function(test) {
     casper
     .thenOpen("http://localhost:8000/tests/fs/fstests.html")
     .waitForText("DONE", function() {
-        test.assertTextExists("DONE: 138 pass, 0 fail", "run fs.js unit tests");
+        test.assertTextExists("DONE: 137 pass, 0 fail", "run fs.js unit tests");
     });
 
     // Run the FileConnection TCK unit tests.
     casper
-    .thenOpen("http://localhost:8000/index.html?main=com.ibm.tck.client.TestRunner&args=-noserver&jars=tests/tests.jar&logConsole=web,page")
+    .thenOpen("http://localhost:8000/index.html?main=com.ibm.tck.client.TestRunner&args=-noserver&jars=tests/tests.jar&logConsole=web,page&logLevel=log")
     .withFrame(0, function() {
         casper.waitForText("All Tests Passed", function() {
             test.assertTextExists("357 tests, 318 passed, 39 excluded, 0 failed", "run FC TCK unit tests");

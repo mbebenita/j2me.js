@@ -5,16 +5,16 @@ Native["gnu/testlet/vm/NativeTest.getInt.()I"] = function() {
   return ~~(0xFFFFFFFF);
 };
 
-Native["gnu/testlet/vm/NativeTest.getLongReturnLong.(J)J"] = function(val) {
-  return Long.fromNumber(40 + val.toNumber());
+Native["gnu/testlet/vm/NativeTest.getLongReturnLong.(J)J"] = function(valLow, valHigh) {
+  return J2ME.returnLong(valLow + 40, valHigh);
 };
 
-Native["gnu/testlet/vm/NativeTest.getLongReturnInt.(J)I"] = function(val) {
-  return ~~(40 + val.toNumber());
+Native["gnu/testlet/vm/NativeTest.getLongReturnInt.(J)I"] = function(valLow, valHigh) {
+  return ~~(40 + J2ME.longToNumber(valLow, valHigh));
 };
 
 Native["gnu/testlet/vm/NativeTest.getIntReturnLong.(I)J"] = function(val) {
-  return Long.fromNumber(40 + val);
+  return J2ME.returnLongValue(40 + val);
 };
 
 Native["gnu/testlet/vm/NativeTest.throwException.()V"] = function() {
@@ -24,8 +24,10 @@ Native["gnu/testlet/vm/NativeTest.throwException.()V"] = function() {
 Native["gnu/testlet/vm/NativeTest.throwExceptionAfterPause.()V"] = function() {
   var ctx = $.ctx;
   asyncImpl("V", new Promise(function(resolve, reject) {
-    ctx.setAsCurrentContext();
-    setTimeout(reject.bind(null, $.newNullPointerException("An exception")), 100);
+    setTimeout(function() {
+      ctx.setAsCurrentContext();
+      reject($.newNullPointerException("An exception"))
+    }, 100);
   }));
 };
 
@@ -40,7 +42,7 @@ Native["gnu/testlet/vm/NativeTest.nonStatic.(I)I"] = function(val) {
 };
 
 Native["gnu/testlet/vm/NativeTest.fromJavaString.(Ljava/lang/String;)I"] = function(str) {
-  return util.fromJavaString(str).length;
+  return J2ME.fromJavaString(str).length;
 };
 
 Native["gnu/testlet/vm/NativeTest.decodeUtf8.([B)I"] = function(str) {
@@ -71,19 +73,25 @@ Native["gnu/testlet/vm/NativeTest.dumbPipe.()Z"] = function() {
 };
 
 Native["com/nokia/mid/ui/TestVirtualKeyboard.hideKeyboard.()V"] = function() {
-  DumbPipe.open("hideKeyboard", null, function(message) {});
+  MIDP.isVKVisible = function() { return false; };
+  MIDP.sendVirtualKeyboardEvent();
 };
 
 Native["com/nokia/mid/ui/TestVirtualKeyboard.showKeyboard.()V"] = function() {
-  DumbPipe.open("showKeyboard", null, function(message) {});
+  MIDP.isVKVisible = function() { return true; };
+  MIDP.sendVirtualKeyboardEvent();
 };
 
 Native["javax/microedition/lcdui/TestAlert.isTextEditorReallyFocused.()Z"] = function() {
-  return currentlyFocusedTextEditor.textEditor.focused ? 1 : 0;
+  return (currentlyFocusedTextEditor && currentlyFocusedTextEditor.focused) ? 1 : 0;
+};
+
+Native["javax/microedition/lcdui/TestTextEditorFocus.isTextEditorReallyFocused.(Lcom/nokia/mid/ui/TextEditor;)Z"] = function(textEditor) {
+  return (currentlyFocusedTextEditor == textEditor.textEditor && currentlyFocusedTextEditor.focused) ? 1 : 0;
 };
 
 Native["gnu/testlet/TestHarness.getNumDifferingPixels.(Ljava/lang/String;)I"] = function(pathStr) {
-  var path = util.fromJavaString(pathStr);
+  var path = J2ME.fromJavaString(pathStr);
   asyncImpl("I", new Promise(function(resolve, reject) {
     var gotCanvas = document.getElementById("canvas");
     var gotPixels = new Uint32Array(gotCanvas.getContext("2d").getImageData(0, 0, gotCanvas.width, gotCanvas.height).data.buffer);
@@ -142,7 +150,105 @@ Native["org/mozilla/io/TestNokiaPhoneStatusServer.sendFakeOfflineEvent.()V"] = f
 
 Native["javax/microedition/media/TestAudioRecorder.convert3gpToAmr.([B)[B"] = function(data) {
   var converted = Media.convert3gpToAmr(new Uint8Array(data));
-  var result = util.newPrimitiveArray("B", converted.length);
+  var result = J2ME.newByteArray(converted.length);
   result.set(converted);
   return result;
+};
+
+Native["com/sun/midp/i18n/TestResourceConstants.setLanguage.(Ljava/lang/String;)V"] = function(language) {
+  MIDP.localizedStrings = null;
+  config.language = J2ME.fromJavaString(language);
+}
+
+// Many tests create FileConnection objects to files with the "/" root,
+// so add it to the list of valid roots.
+MIDP.fsRoots.push("/");
+
+Native["org/mozilla/MemorySampler.sampleMemory.(Ljava/lang/String;)V"] = function(label) {
+  if (typeof Benchmark !== "undefined") {
+    asyncImpl("V", Benchmark.sampleMemory().then(function(memory) {
+      var keys = ["totalSize", "domSize", "styleSize", "jsObjectsSize", "jsStringsSize", "jsOtherSize", "otherSize"];
+      var rows = [];
+      rows.push(keys);
+      rows.push(keys.map(function(k) { return memory[k] }));
+      var RIGHT = Benchmark.RIGHT;
+      var alignment = [RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT];
+      console.log((J2ME.fromJavaString(label) || "Memory sample") + ":\n" + Benchmark.prettyTable(rows, alignment));
+    }));
+  }
+};
+
+Native["org/mozilla/Test.callSyncNative.()V"] = function() {
+  // A noop sync implementation for comparison with the noop async one.
+};
+
+Native["org/mozilla/Test.callAsyncNative.()V"] = function() {
+  // A noop async implementation for comparison with the noop sync one.
+  asyncImpl("V", new Promise(function (resolve, reject) {
+    resolve();
+  }));
+
+  // This is even faster, but not very handy, unless your native is really
+  // synchronous, and you just want to force the thread to yield.
+  // asyncImpl("V", Promise.resolve());
+};
+
+var readerOpened = false;
+var readerOpenedWaiting = null;
+
+Native["tests/recordstore/ReaderMIDlet.readerOpened.()V"] = function() {
+  readerOpened = true;
+
+  if (readerOpenedWaiting) {
+    readerOpenedWaiting();
+  }
+};
+
+Native["tests/recordstore/WriterMIDlet.waitReaderOpened.()V"] = function() {
+  asyncImpl("V", new Promise(function(resolve, reject) {
+    if (readerOpened) {
+      resolve();
+    } else {
+      readerOpenedWaiting = resolve;
+    }
+  }));
+};
+
+var writerWrote = false;
+var writerWroteWaiting = null;
+
+Native["tests/recordstore/WriterMIDlet.writerWrote.()V"] = function() {
+  writerWrote = true;
+
+  if (writerWroteWaiting) {
+    writerWroteWaiting();
+  }
+};
+
+Native["tests/recordstore/ReaderMIDlet.waitWriterWrote.()V"] = function() {
+  asyncImpl("V", new Promise(function(resolve, reject) {
+    if (writerWrote) {
+      resolve();
+    } else {
+      writerWroteWaiting = resolve;
+    }
+  }));
+};
+
+Native["tests/background/DestroyMIDlet.sendDestroyMIDletEvent.()V"] = function() {
+  MIDP.setDestroyedForRestart(true);
+  MIDP.sendDestroyMIDletEvent(J2ME.newString("tests.background.DestroyMIDlet"));
+};
+
+Native["tests/background/DestroyMIDlet.sendExecuteMIDletEvent.()V"] = function() {
+  setTimeout(function() {
+    MIDP.sendExecuteMIDletEvent();
+  }, 0);
+};
+
+var called = 0;
+Native["tests/background/DestroyMIDlet.maybePrintDone.()V"] = function() {
+  if (++called === 2) {
+    console.log("DONE");
+  }
 };

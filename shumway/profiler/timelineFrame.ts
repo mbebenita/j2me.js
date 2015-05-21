@@ -218,7 +218,7 @@ module Shumway.Tools.Profiler {
       return depth;
     }
 
-    public calculateStatistics() {
+    public calculateStatistics(): TimelineFrameStatistics [] {
       var statistics = this.statistics = [];
       function visit(frame: TimelineFrame) {
         if (frame.kind) {
@@ -232,15 +232,43 @@ module Shumway.Tools.Profiler {
         }
       }
       visit(this);
+      return this.statistics;
     }
 
-    public trace(writer: IndentingWriter) {
-      var s = (this.kind ? this.kind.name + ": " : "Profile: ") +
-              (this.endTime - this.startTime).toFixed(2);
+    public traceStatistics(writer: IndentingWriter, minTime: number = 0.0001) {
+      this.calculateStatistics();
+      var s = [];
+      // Filter out null values.
+      for (var i = 0; i < this.statistics.length; i++) {
+        if (this.statistics[i] && this.statistics[i].totalTime > minTime) {
+          s.push(this.statistics[i]);
+        }
+      }
+      // Sort by self time descending, so expensive events are more prominent.
+      s.sort(function (a, b) {
+        return b.selfTime - a.selfTime;
+      })
+      for (var i = 0; i < s.length; i++) {
+        var statistic = s[i];
+        writer.writeLn(
+          (statistic.kind ? statistic.kind.name + ": " : "?: ") +
+          "count: " + statistic.count + ", " +
+          "self: " + statistic.selfTime.toFixed(3) + " ms, " +
+          "total: " + statistic.totalTime.toFixed(3) + " ms."
+        );
+      }
+    }
+
+    public trace(writer: IndentingWriter, minTime: number = 0.0001) {
+      var time = this.endTime - this.startTime;
+      if (time < minTime) {
+        return;
+      }
+      var s = (this.kind ? this.kind.name + ": " : "Profile: ") + time.toFixed(3);
       if (this.children && this.children.length) {
         writer.enter(s);
         for (var i = 0; i < this.children.length; i++) {
-          this.children[i].trace(writer);
+          this.children[i].trace(writer, minTime);
         }
         writer.outdent();
       } else {
@@ -255,4 +283,32 @@ module Shumway.Tools.Profiler {
     }
   }
 
+  export class TimelineBufferSnapshotSet extends TimelineBufferSnapshot {
+    constructor (public snapshots: TimelineBufferSnapshot []) {
+      super(null);
+    }
+
+    public calculateStatistics(): TimelineFrameStatistics [] {
+      var snapshots = this.snapshots;
+      var aggregateStats = {};
+
+      for (var i = 0; i < snapshots.length; i++) {
+        var snapshot = snapshots[i];
+        var statistics = snapshot.statistics || snapshot.calculateStatistics();
+
+        for (var j = 0; j < statistics.length; j++) {
+          var stat = statistics[j];
+          if (stat) {
+            var name = stat.kind ? stat.kind.name : "?";
+            var aggregateStat = aggregateStats[name] = aggregateStats[name] || new TimelineFrameStatistics(stat.kind);
+            aggregateStat.count += stat.count;
+            aggregateStat.selfTime += stat.selfTime;
+            aggregateStat.totalTime += stat.totalTime;
+          }
+        }
+      }
+
+      return this.statistics = Object.keys(aggregateStats).map(function (key) { return aggregateStats[key] });
+    }
+  }
 }

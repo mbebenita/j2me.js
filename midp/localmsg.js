@@ -3,7 +3,14 @@
 
 'use strict';
 
+var LocalMsgConnectionMessage = function(data, offset, length) {
+  this.data = data;
+  this.offset = offset;
+  this.length = length;
+}
+
 var LocalMsgConnection = function() {
+    this.clientConnected = false;
     this.waitingForConnection = null;
     this.serverWaiting = [];
     this.clientWaiting = [];
@@ -12,6 +19,8 @@ var LocalMsgConnection = function() {
 }
 
 LocalMsgConnection.prototype.notifyConnection = function() {
+    this.clientConnected = true;
+
     if (this.waitingForConnection) {
         this.waitingForConnection();
     }
@@ -36,47 +45,44 @@ LocalMsgConnection.prototype.copyMessage = function(messageQueue, data) {
     return msg.length;
 }
 
-LocalMsgConnection.prototype.sendMessageToClient = function(message) {
-    this.clientMessages.push(message);
+LocalMsgConnection.prototype.sendMessageToClient = function(data, offset, length) {
+    this.clientMessages.push(new LocalMsgConnectionMessage(data, offset, length));
 
     if (this.clientWaiting.length > 0) {
         this.clientWaiting.shift()();
     }
 }
 
-LocalMsgConnection.prototype.clientReceiveMessage = function(data) {
-    return new Promise((function(resolve, reject) {
-        if (this.clientMessages.length == 0) {
-            this.clientWaiting.push(function() {
-                resolve(this.copyMessage(this.clientMessages, data));
-            }.bind(this));
-
-            return;
-        }
-
-        resolve(this.copyMessage(this.clientMessages, data));
-    }).bind(this));
+LocalMsgConnection.prototype.getClientMessage = function(data) {
+  return this.copyMessage(this.clientMessages, data);
 }
 
-LocalMsgConnection.prototype.sendMessageToServer = function(message) {
-    this.serverMessages.push(message);
+LocalMsgConnection.prototype.waitClientMessage = function(data) {
+    asyncImpl("I", new Promise((function(resolve, reject) {
+        this.clientWaiting.push(function() {
+            resolve(this.getClientMessage(data));
+        }.bind(this));
+    }).bind(this)));
+}
+
+LocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
+    this.serverMessages.push(new LocalMsgConnectionMessage(data, offset, length));
 
     if (this.serverWaiting.length > 0) {
         this.serverWaiting.shift()();
     }
 }
 
-LocalMsgConnection.prototype.serverReceiveMessage = function(data) {
-    return new Promise((function(resolve, reject) {
-        if (this.serverMessages.length == 0) {
-            this.serverWaiting.push(function() {
-                resolve(this.copyMessage(this.serverMessages, data));
-            }.bind(this));
-            return;
-        }
+LocalMsgConnection.prototype.getServerMessage = function(data) {
+  return this.copyMessage(this.serverMessages, data);
+}
 
-        resolve(this.copyMessage(this.serverMessages, data));
-    }).bind(this));
+LocalMsgConnection.prototype.waitServerMessage = function(data) {
+    asyncImpl("I", new Promise((function(resolve, reject) {
+        this.serverWaiting.push(function() {
+            resolve(this.getServerMessage(data));
+        }.bind(this));
+    }).bind(this)));
 }
 
 var NokiaMessagingLocalMsgConnection = function() {
@@ -98,18 +104,14 @@ NokiaMessagingLocalMsgConnection.prototype.receiveSMS = function(sms) {
   encoder.put(DataType.ULONG, "message_id", sms.id);
   encoder.putEnd(DataType.STRUCT, "event");
 
-  var data = new TextEncoder().encode(encoder.getData());
-  this.sendMessageToClient({
-    data: data,
-    length: data.length,
-    offset: 0,
-  });
+  var replyData = new TextEncoder().encode(encoder.getData());
+  this.sendMessageToClient(replyData, 0, replyData.length);
 }
 
-NokiaMessagingLocalMsgConnection.prototype.sendMessageToServer = function(message) {
+NokiaMessagingLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
   var encoder = new DataEncoder();
 
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -126,6 +128,7 @@ NokiaMessagingLocalMsgConnection.prototype.sendMessageToServer = function(messag
     break;
 
     case "SubscribeMessages":
+      promptForMessageText();
       encoder.putStart(DataType.STRUCT, "event");
       encoder.put(DataType.METHOD, "name", "SubscribeMessages");
       encoder.put(DataType.USHORT, "trans_id", decoder.getValue(DataType.USHORT)); // The meaning of this field is unknown
@@ -174,16 +177,12 @@ NokiaMessagingLocalMsgConnection.prototype.sendMessageToServer = function(messag
 
     default:
       console.error("(nokia.messaging) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 
-  var data = new TextEncoder().encode(encoder.getData());
-  this.sendMessageToClient({
-    data: data,
-    length: data.length,
-    offset: 0,
-  });
+  var replyData = new TextEncoder().encode(encoder.getData());
+  this.sendMessageToClient(replyData, 0, replyData.length);
 }
 
 var NokiaSASrvRegLocalMsgConnection = function() {
@@ -192,8 +191,8 @@ var NokiaSASrvRegLocalMsgConnection = function() {
 
 NokiaSASrvRegLocalMsgConnection.prototype = Object.create(LocalMsgConnection.prototype);
 
-NokiaSASrvRegLocalMsgConnection.prototype.sendMessageToServer = function(message) {
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+NokiaSASrvRegLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -228,12 +227,8 @@ NokiaSASrvRegLocalMsgConnection.prototype.sendMessageToServer = function(message
       break;
   }
 
-  var data = new TextEncoder().encode(encoder.getData());
-  this.sendMessageToClient({
-      data: data,
-      length: data.length,
-      offset: 0,
-  });
+  var replyData = new TextEncoder().encode(encoder.getData());
+  this.sendMessageToClient(replyData, 0, replyData.length);
 };
 
 var NokiaPhoneStatusLocalMsgConnection = function() {
@@ -300,12 +295,8 @@ NokiaPhoneStatusLocalMsgConnection.prototype.sendChangeNotify = function(replyBu
   encoder.putEnd(DataType.LIST, "subscriptions");
   encoder.putEnd(DataType.STRUCT, "event");
 
-  var data = new TextEncoder().encode(encoder.getData());
-  this.sendMessageToClient({
-    data: data,
-    length: data.length,
-    offset: 0,
-  });
+  var replyData = new TextEncoder().encode(encoder.getData());
+  this.sendMessageToClient(replyData, 0, replyData.length);
 }
 
 NokiaPhoneStatusLocalMsgConnection.prototype.addListener = function(type) {
@@ -321,8 +312,8 @@ NokiaPhoneStatusLocalMsgConnection.prototype.removeListener = function(type) {
   this.listeners[type] = false;
 }
 
-NokiaPhoneStatusLocalMsgConnection.prototype.sendMessageToServer = function(message) {
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+NokiaPhoneStatusLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -339,12 +330,8 @@ NokiaPhoneStatusLocalMsgConnection.prototype.sendMessageToServer = function(mess
       encoder.putEnd(DataType.STRUCT, "message");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
       break;
 
     case "Query":
@@ -381,7 +368,7 @@ NokiaPhoneStatusLocalMsgConnection.prototype.sendMessageToServer = function(mess
 
             default:
               console.error("(nokia.phone-status) Query " + decoder.getName() + " not implemented " +
-                            util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                            util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
               break;
           }
         } else if (queryKind === "Disable") {
@@ -395,19 +382,15 @@ NokiaPhoneStatusLocalMsgConnection.prototype.sendMessageToServer = function(mess
         encoder.putEnd(DataType.LIST, "subscriptions");
         encoder.putEnd(DataType.STRUCT, "event");
 
-        var data = new TextEncoder().encode(encoder.getData());
-        this.sendMessageToClient({
-          data: data,
-          length: data.length,
-          offset: 0,
-        });
+        var replyData = new TextEncoder().encode(encoder.getData());
+        this.sendMessageToClient(replyData, 0, replyData.length);
       }
 
       break;
 
     default:
       console.error("(nokia.phone-status) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 };
@@ -450,12 +433,8 @@ NokiaContactsLocalMsgConnection.prototype.sendContact = function(trans_id, conta
     this.encodeContact(encoder, contact);
     encoder.putEnd(DataType.STRUCT, "event");
 
-    var data = new TextEncoder().encode(encoder.getData());
-    this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-    });
+    var replyData = new TextEncoder().encode(encoder.getData());
+    this.sendMessageToClient(replyData, 0, replyData.length);
 };
 
 NokiaContactsLocalMsgConnection.prototype.getFirstOrNext = function(trans_id, method) {
@@ -479,19 +458,15 @@ NokiaContactsLocalMsgConnection.prototype.getFirstOrNext = function(trans_id, me
     }
     encoder.putEnd(DataType.STRUCT, "event");
 
-    var data = new TextEncoder().encode(encoder.getData());
-    this.sendMessageToClient({
-      data: data,
-      length: data.length,
-      offset: 0,
-    });
+    var replyData = new TextEncoder().encode(encoder.getData());
+    this.sendMessageToClient(replyData, 0, replyData.length);
   }).bind(this);
 
   contacts.getNext(gotContact);
 };
 
-NokiaContactsLocalMsgConnection.prototype.sendMessageToServer = function(message) {
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+NokiaContactsLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -508,12 +483,8 @@ NokiaContactsLocalMsgConnection.prototype.sendMessageToServer = function(message
       encoder.putEnd(DataType.STRUCT, "message");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-          data: data,
-          length: data.length,
-          offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
     break;
 
     case "NotifySubscribe":
@@ -526,7 +497,7 @@ NokiaContactsLocalMsgConnection.prototype.sendMessageToServer = function(message
       var numEntries = decoder.getValue(DataType.ULONG);
       if (numEntries !== 1) {
         console.error("(nokia.contacts) event getFirst with numEntries != 1 not implemented " +
-                      util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                      util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       }
 
       this.getFirstOrNext(trans_id, "getFirst");
@@ -542,12 +513,12 @@ NokiaContactsLocalMsgConnection.prototype.sendMessageToServer = function(message
       var includeStartEntry = decoder.getValue(DataType.BOOLEAN);
       if (includeStartEntry == 1) {
         console.error("(nokia.contacts) event getNext with includeStartEntry == true not implemented " +
-                      util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                      util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       }
       var numEntries = decoder.getValue(DataType.ULONG);
       if (numEntries !== 1) {
         console.error("(nokia.contacts) event getNext with numEntries != 1 not implemented " +
-                      util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                      util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       }
 
       this.getFirstOrNext(trans_id, "getNext");
@@ -555,7 +526,7 @@ NokiaContactsLocalMsgConnection.prototype.sendMessageToServer = function(message
 
     default:
       console.error("(nokia.contacts) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 }
@@ -566,8 +537,8 @@ var NokiaFileUILocalMsgConnection = function() {
 
 NokiaFileUILocalMsgConnection.prototype = Object.create(LocalMsgConnection.prototype);
 
-NokiaFileUILocalMsgConnection.prototype.sendMessageToServer = function(message) {
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+NokiaFileUILocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -584,12 +555,8 @@ NokiaFileUILocalMsgConnection.prototype.sendMessageToServer = function(message) 
       encoder.putEnd(DataType.STRUCT, "message");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-          data: data,
-          length: data.length,
-          offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
       break;
 
     case "FileSelect":
@@ -611,6 +578,7 @@ NokiaFileUILocalMsgConnection.prototype.sendMessageToServer = function(message) 
         break;
 
         case "Music":
+        case "Sound":
           accept = "audio/*";
         break;
 
@@ -618,7 +586,8 @@ NokiaFileUILocalMsgConnection.prototype.sendMessageToServer = function(message) 
           throw new Error("Media type '" + mediaType + "' not supported");
       }
 
-      var el = document.getElementById('nokia-fileui-prompt').cloneNode(true);
+      var promptTemplateNode = document.getElementById('nokia-fileui-prompt');
+      var el = promptTemplateNode.cloneNode(true);
       el.style.display = 'block';
       el.classList.add('visible');
 
@@ -652,39 +621,34 @@ NokiaFileUILocalMsgConnection.prototype.sendMessageToServer = function(message) 
           ext = selectedFile.name.substr(extIndex);
         }
 
-        fs.createUniqueFile("/nokiafileui", "file" + ext, selectedFile, (function(fileName) {
-          var encoder = new DataEncoder();
+        var fileName = fs.createUniqueFile("/Private/nokiafileui", "file" + ext, selectedFile);
+        var encoder = new DataEncoder();
 
-          encoder.putStart(DataType.STRUCT, "event");
-          encoder.put(DataType.METHOD, "name", "FileSelect");
-          encoder.put(DataType.USHORT, "trans_id", trans_id);
-          encoder.put(DataType.STRING, "result", "OK"); // Name unknown
-          encoder.putStart(DataType.ARRAY, "unknown_array"); // Name unknown
-          encoder.putStart(DataType.STRUCT, "unknown_struct"); // Name unknown
-          encoder.put(DataType.STRING, "unknown_string_1", ""); // Name and value unknown
-          encoder.put(DataType.WSTRING, "unknown_string_2", ""); // Name and value unknown
-          encoder.put(DataType.WSTRING, "unknown_string_3", "nokiafileui/" + fileName); // Name unknown
-          encoder.put(DataType.BOOLEAN, "unknown_boolean", 1); // Name and value unknown
-          encoder.put(DataType.ULONG, "unknown_long", 0); // Name and value unknown
-          encoder.putEnd(DataType.STRUCT, "unknown_struct"); // Name unknown
-          encoder.putEnd(DataType.ARRAY, "unknown_array"); // Name unknown
-          encoder.putEnd(DataType.STRUCT, "event");
+        encoder.putStart(DataType.STRUCT, "event");
+        encoder.put(DataType.METHOD, "name", "FileSelect");
+        encoder.put(DataType.USHORT, "trans_id", trans_id);
+        encoder.put(DataType.STRING, "result", "OK"); // Name unknown
+        encoder.putStart(DataType.ARRAY, "unknown_array"); // Name unknown
+        encoder.putStart(DataType.STRUCT, "unknown_struct"); // Name unknown
+        encoder.put(DataType.STRING, "unknown_string_1", ""); // Name and value unknown
+        encoder.put(DataType.WSTRING, "unknown_string_2", ""); // Name and value unknown
+        encoder.put(DataType.WSTRING, "unknown_string_3", "Private/nokiafileui/" + fileName); // Name unknown
+        encoder.put(DataType.BOOLEAN, "unknown_boolean", 1); // Name and value unknown
+        encoder.put(DataType.ULONG, "unknown_long", 0); // Name and value unknown
+        encoder.putEnd(DataType.STRUCT, "unknown_struct"); // Name unknown
+        encoder.putEnd(DataType.ARRAY, "unknown_array"); // Name unknown
+        encoder.putEnd(DataType.STRUCT, "event");
 
-          var data = new TextEncoder().encode(encoder.getData());
-          this.sendMessageToClient({
-            data: data,
-            length: data.length,
-            offset: 0,
-          });
-        }).bind(this));
+        var replyData = new TextEncoder().encode(encoder.getData());
+        this.sendMessageToClient(replyData, 0, replyData.length);
       }).bind(this));
 
-      document.body.appendChild(el);
+      promptTemplateNode.parentNode.appendChild(el);
     break;
 
     default:
       console.error("(nokia.file-ui) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 };
@@ -695,8 +659,8 @@ var NokiaImageProcessingLocalMsgConnection = function() {
 
 NokiaImageProcessingLocalMsgConnection.prototype = Object.create(LocalMsgConnection.prototype);
 
-NokiaImageProcessingLocalMsgConnection.prototype.sendMessageToServer = function(message) {
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+NokiaImageProcessingLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -713,12 +677,8 @@ NokiaImageProcessingLocalMsgConnection.prototype.sendMessageToServer = function(
       encoder.putEnd(DataType.STRUCT, "message");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
       break;
 
     case "Scale":
@@ -756,111 +716,99 @@ NokiaImageProcessingLocalMsgConnection.prototype.sendMessageToServer = function(
 
       if (aspect != "FullImage" && aspect != "LockToPartialView") {
         console.error("(nokia.image-processing) event " + name + " with aspect != 'FullImage' or 'LockToPartialView' not implemented " +
-                      util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                      util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
         return;
       }
 
-      fs.open("/" + fileName, (function(fd) {
-        var img = null;
+      var imgData = fs.getBlob("/" + fileName);
+      var img = new Image();
+      img.src = URL.createObjectURL(imgData);
 
-        function _cleanupImg() {
-          if (img) {
-            URL.revokeObjectURL(img.src);
-            img.src = '';
-            img = null;
-          }
+      function _cleanupImg() {
+        if (img) {
+          URL.revokeObjectURL(img.src);
+          img.src = '';
+          img = null;
+        }
+      }
+
+      var _sendBackScaledImage = function(blob) {
+        _cleanupImg();
+
+        var ext = "";
+        var extIndex = fileName.lastIndexOf(".");
+        if (extIndex != -1) {
+          ext = fileName.substr(extIndex);
         }
 
-        var _sendBackScaledImage = function(blob) {
-          _cleanupImg();
+        var uniqueFileName = fs.createUniqueFile("/Private/nokiaimageprocessing", "image" + ext, blob);
+        var encoder = new DataEncoder();
 
-          var ext = "";
-          var extIndex = fileName.lastIndexOf(".");
-          if (extIndex != -1) {
-            ext = fileName.substr(extIndex);
-          }
+        encoder.putStart(DataType.STRUCT, "event");
+        encoder.put(DataType.METHOD, "name", "Scale");
+        encoder.put(DataType.BYTE, "trans_id", trans_id);
+        encoder.put(DataType.STRING, "result", "Complete"); // Name unknown
+        encoder.put(DataType.WSTRING, "filename", "Private/nokiaimageprocessing/" + uniqueFileName); // Name unknown
+        encoder.putEnd(DataType.STRUCT, "event");
 
-          fs.createUniqueFile("/nokiaimageprocessing", "image" + ext, blob, (function(fileName) {
-            var encoder = new DataEncoder();
+        var replyData = new TextEncoder().encode(encoder.getData());
+        this.sendMessageToClient(replyData, 0, replyData.length);
+      }.bind(this);
 
-            encoder.putStart(DataType.STRUCT, "event");
-            encoder.put(DataType.METHOD, "name", "Scale");
-            encoder.put(DataType.BYTE, "trans_id", trans_id);
-            encoder.put(DataType.STRING, "result", "Complete"); // Name unknown
-            encoder.put(DataType.WSTRING, "filename", "nokiaimageprocessing/" + fileName); // Name unknown
-            encoder.putEnd(DataType.STRUCT, "event");
+      img.onload = (function() {
+        // If the image size is less than the given max_kb, and height/width
+        // are less than max_hres/max_wres, send the original image immediately
+        // without any scaling.
+        if (max_kb > 0 && (max_kb * 1024) >= imgData.size &&
+            (max_hres <= 0 || img.naturalHeight <= max_vres) &&
+            (max_vres <= 0 || img.naturalWidth <= max_hres)) {
+          _sendBackScaledImage(imgData);
+          return;
+        }
 
-            var data = new TextEncoder().encode(encoder.getData());
-            this.sendMessageToClient({
-              data: data,
-              length: data.length,
-              offset: 0,
-            });
-          }).bind(this));
-        }.bind(this);
+        function _imageToBlob(aCanvas, aImage, aHeight, aWidth, aQuality) {
+          aCanvas.width = aWidth;
+          aCanvas.height = aHeight;
+          var ctx = aCanvas.getContext("2d");
+          ctx.drawImage(aImage, 0, 0, aWidth, aHeight);
 
-        var imgData = fs.read(fd);
-        var fileSize = fs.getsize(fd);
-        fs.close(fd);
+          return new Promise(function(resolve, reject) {
+            aCanvas.toBlob(resolve, "image/jpeg", aQuality / 100);
+          });
+        }
 
-        img = new Image();
-        img.src = URL.createObjectURL(new Blob([ imgData ]));
+        var canvas = document.createElement("canvas");
+        if (max_kb <= 0) {
+          _imageToBlob(canvas, img, Math.min(img.naturalHeight, max_vres),
+                       Math.min(img.naturalWidth, max_hres), quality).then(_sendBackScaledImage);
+          return;
+        }
 
-        img.onload = (function() {
-          // If the image size is less than the given max_kb, and height/width
-          // are less than max_hres/max_wres, send the original image immediately
-          // without any scaling.
-          if (max_kb > 0 && (max_kb * 1024) >= fileSize &&
-              (max_hres <= 0 || img.naturalHeight <= max_vres) &&
-              (max_vres <= 0 || img.naturalWidth <= max_hres)) {
-            _sendBackScaledImage(new Blob([ imgData ]));
-            return;
-          }
+        _imageToBlob(canvas, img, img.naturalHeight,
+                     img.naturalWidth, quality).then(function(blob) {
+          var imgSizeInKb = blob.size / 1024;
 
-          function _imageToBlob(aCanvas, aImage, aHeight, aWidth, aQuality) {
-            aCanvas.width = aWidth;
-            aCanvas.height = aHeight;
-            var ctx = aCanvas.getContext("2d");
-            ctx.drawImage(aImage, 0, 0, aWidth, aHeight);
+          // Roughly recalc max_vres and max_hres based on the max_kb and the real resolution.
+          var ratio = Math.sqrt(max_kb / imgSizeInKb);
+          max_hres = Math.min(img.naturalWidth * ratio,
+            max_hres <= 0 ? img.naturalWidth : max_hres);
+          max_vres = Math.min(img.naturalHeight * ratio,
+            max_vres <=0 ? img.naturalHeight : max_vres);
 
-            return new Promise(function(resolve, reject) {
-              aCanvas.toBlob(resolve, "image/jpeg", aQuality / 100);
-            });
-          }
+          return _imageToBlob(canvas, img, Math.min(img.naturalHeight, max_vres),
+                              Math.min(img.naturalWidth, max_hres), quality);
+        }).then(_sendBackScaledImage);
+      }).bind(this);
 
-          var canvas = document.createElement("canvas");
-          if (max_kb <= 0) {
-            _imageToBlob(canvas, img, Math.min(img.naturalHeight, max_vres),
-                         Math.min(img.naturalWidth, max_hres), quality).then(_sendBackScaledImage);
-            return;
-          }
-
-          _imageToBlob(canvas, img, img.naturalHeight,
-                       img.naturalWidth, quality).then(function(blob) {
-            var imgSizeInKb = blob.size / 1024;
-
-            // Roughly recalc max_vres and max_hres based on the max_kb and the real resolution.
-            var ratio = Math.sqrt(max_kb / imgSizeInKb);
-            max_hres = Math.min(img.naturalWidth * ratio,
-              max_hres <= 0 ? img.naturalWidth : max_hres);
-            max_vres = Math.min(img.naturalHeight * ratio,
-              max_vres <=0 ? img.naturalHeight : max_vres);
-
-            return _imageToBlob(canvas, img, Math.min(img.naturalHeight, max_vres),
-                                Math.min(img.naturalWidth, max_hres), quality);
-          }).then(_sendBackScaledImage);
-        }).bind(this);
-
-        img.onerror = function(e) {
-          console.error("Error in decoding image");
-          _cleanupImg();
-        };
-      }).bind(this));
+      img.onerror = function(e) {
+        console.error("Error in decoding image");
+        _cleanupImg();
+      };
     break;
 
     default:
       console.error("(nokia.image-processing) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 };
@@ -871,9 +819,9 @@ var NokiaProductInfoLocalMsgConnection = function() {
 
 NokiaProductInfoLocalMsgConnection.prototype = Object.create(LocalMsgConnection.prototype);
 
-NokiaProductInfoLocalMsgConnection.prototype.sendMessageToServer = function(message) {
+NokiaProductInfoLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
   var encoder = new DataEncoder();
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+  var decoder = new DataDecoder(data, offset, length);
   decoder.getStart(DataType.STRUCT);
 
   var name = decoder.getValue(DataType.METHOD);
@@ -887,12 +835,8 @@ NokiaProductInfoLocalMsgConnection.prototype.sendMessageToServer = function(mess
       encoder.putEnd(DataType.STRUCT, "message");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
       break;
     case "ReadProductInfo":
       encoder.putStart(DataType.STRUCT, "event");
@@ -905,16 +849,12 @@ NokiaProductInfoLocalMsgConnection.prototype.sendMessageToServer = function(mess
       encoder.put(DataType.STRING, "unkown_str_5", "");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
       break;
     default:
       console.error("(nokia.status-info) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 };
@@ -937,10 +877,10 @@ NokiaActiveStandbyLocalMsgConnection.prototype.recipient = function(message) {
   }
 }
 
-NokiaActiveStandbyLocalMsgConnection.prototype.sendMessageToServer = function(message) {
+NokiaActiveStandbyLocalMsgConnection.prototype.sendMessageToServer = function(data, offset, length) {
   var encoder = new DataEncoder();
 
-  var decoder = new DataDecoder(message.data, message.offset, message.length);
+  var decoder = new DataDecoder(data, offset, length);
 
   decoder.getStart(DataType.STRUCT);
   var name = decoder.getValue(DataType.METHOD);
@@ -955,12 +895,8 @@ NokiaActiveStandbyLocalMsgConnection.prototype.sendMessageToServer = function(me
       encoder.putEnd(DataType.STRUCT, "message");
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
     break;
 
     case "Register":
@@ -974,12 +910,8 @@ NokiaActiveStandbyLocalMsgConnection.prototype.sendMessageToServer = function(me
       encoder.put(DataType.STRING, "result", "OK"); // Name unknown
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
 
       setZeroTimeout((function() {
         var encoder = new DataEncoder();
@@ -995,12 +927,8 @@ NokiaActiveStandbyLocalMsgConnection.prototype.sendMessageToServer = function(me
         encoder.put(DataType.SHORT, "unknown_short_2", 0); // Name and value unknown
         encoder.putEnd(DataType.STRUCT, "event");
 
-        var data = new TextEncoder().encode(encoder.getData());
-        this.sendMessageToClient({
-          data: data,
-          length: data.length,
-          offset: 0,
-        });
+        var replyData = new TextEncoder().encode(encoder.getData());
+        this.sendMessageToClient(replyData, 0, replyData.length);
       }).bind(this));
     break;
 
@@ -1029,17 +957,13 @@ NokiaActiveStandbyLocalMsgConnection.prototype.sendMessageToServer = function(me
       encoder.put(DataType.STRING, "result", "OK"); // Name unknown
       encoder.putEnd(DataType.STRUCT, "event");
 
-      var data = new TextEncoder().encode(encoder.getData());
-      this.sendMessageToClient({
-        data: data,
-        length: data.length,
-        offset: 0,
-      });
+      var replyData = new TextEncoder().encode(encoder.getData());
+      this.sendMessageToClient(replyData, 0, replyData.length);
       break;
 
     default:
       console.error("(nokia.active-standby) event " + name + " not implemented " +
-                    util.decodeUtf8(new Uint8Array(message.data.buffer, message.offset, message.length)));
+                    util.decodeUtf8(new Int8Array(data.buffer, offset, length)));
       return;
   }
 }
@@ -1072,66 +996,81 @@ MIDP.LocalMsgConnections["nokia.sa.service-registry"] = NokiaSASrvRegLocalMsgCon
 MIDP.LocalMsgConnections["nokia.active-standby"] = NokiaActiveStandbyLocalMsgConnection;
 MIDP.LocalMsgConnections["nokia.product-info"] = NokiaProductInfoLocalMsgConnection;
 
+var localmsgServerWait = null;
+
 Native["org/mozilla/io/LocalMsgConnection.init.(Ljava/lang/String;)V"] = function(jName) {
-    var name = util.fromJavaString(jName);
+    var name = J2ME.fromJavaString(jName);
 
     this.server = (name[2] == ":");
     this.protocolName = name.slice((name[2] == ':') ? 3 : 2);
-    asyncImpl("V", new Promise((function(resolve, reject) {
-        if (this.server) {
-            // It seems that one server only serves on client at a time, let's
-            // store an object instead of the constructor.
-            this.connection = MIDP.LocalMsgConnections[this.protocolName] = new LocalMsgConnection();
-            MIDP.ConnectionRegistry.pushNotify("localmsg:" + this.protocolName);
-        } else {
-            // Actually, there should always be a server, but we need this check
-            // for apps that use the Nokia built-in servers (because we haven't
-            // implemented them yet).
-            if (!MIDP.LocalMsgConnections[this.protocolName]) {
-                console.error("localmsg server (" + this.protocolName + ") unimplemented");
-                // Return without resolving the promise, we want the thread that is connecting
-                // to this unimplemented server to stop indefinitely.
-                return;
-            }
 
-            if (MIDP.FakeLocalMsgServers.indexOf(this.protocolName) != -1) {
-                console.warn("connect to an unimplemented localmsg server (" + this.protocolName + ")");
-            }
-
-            this.connection = typeof MIDP.LocalMsgConnections[this.protocolName] === 'function' ?
-              new MIDP.LocalMsgConnections[this.protocolName]() : MIDP.LocalMsgConnections[this.protocolName];
-            this.connection.notifyConnection();
+    if (this.server) {
+        // It seems that one server only serves on client at a time, let's
+        // store an object instead of the constructor.
+        this.connection = MIDP.LocalMsgConnections[this.protocolName] = new LocalMsgConnection();
+        if (localmsgServerWait) {
+            localmsgServerWait();
         }
 
-        resolve();
-    }).bind(this)));
+        return;
+    }
+
+    if (!MIDP.LocalMsgConnections[this.protocolName]) {
+        if (this.protocolName.startsWith("nokia")) {
+            console.error("localmsg server (" + this.protocolName + ") unimplemented");
+            // Return without resolving the promise, we want the thread that is connecting
+            // to this unimplemented server to stop indefinitely.
+            return;
+        }
+
+        asyncImpl("V", new Promise((function(resolve, reject) {
+            localmsgServerWait = function() {
+                localmsgServerWait = null;
+                this.connection = MIDP.LocalMsgConnections[this.protocolName];
+                this.connection.notifyConnection();
+                resolve();
+            }.bind(this);
+        }).bind(this)));
+
+        return;
+    }
+
+    if (MIDP.FakeLocalMsgServers.indexOf(this.protocolName) != -1) {
+        console.warn("connect to an unimplemented localmsg server (" + this.protocolName + ")");
+    }
+
+    this.connection = typeof MIDP.LocalMsgConnections[this.protocolName] === 'function' ?
+        new MIDP.LocalMsgConnections[this.protocolName]() : MIDP.LocalMsgConnections[this.protocolName];
+    this.connection.notifyConnection();
 };
 
 Native["org/mozilla/io/LocalMsgConnection.waitConnection.()V"] = function() {
+    if (this.connection.clientConnected) {
+        return;
+    }
+
     asyncImpl("V", this.connection.waitConnection());
 };
 
 Native["org/mozilla/io/LocalMsgConnection.sendData.([BII)V"] = function(data, offset, length) {
-    var message = {
-      data: data,
-      offset: offset,
-      length: length,
-    };
-
     if (this.server) {
-        this.connection.sendMessageToClient(message);
+        this.connection.sendMessageToClient(data, offset, length);
     } else {
         if (MIDP.FakeLocalMsgServers.indexOf(this.protocolName) != -1) {
-            console.warn("sendData (" + util.decodeUtf8(new Uint8Array(data.buffer, offset, length)) + ") to an unimplemented localmsg server (" + this.protocolName + ")");
+            console.warn("sendData (" + util.decodeUtf8(new Int8Array(data.buffer, offset, length)) + ") to an unimplemented localmsg server (" + this.protocolName + ")");
         }
 
-        this.connection.sendMessageToServer(message);
+        this.connection.sendMessageToServer(data, offset, length);
     }
 };
 
 Native["org/mozilla/io/LocalMsgConnection.receiveData.([B)I"] = function(data) {
     if (this.server) {
-        asyncImpl("I", this.connection.serverReceiveMessage(data));
+        if (this.connection.serverMessages.length > 0) {
+          return this.connection.getServerMessage(data);
+        }
+
+        this.connection.waitServerMessage(data);
         return;
     }
 
@@ -1139,7 +1078,11 @@ Native["org/mozilla/io/LocalMsgConnection.receiveData.([B)I"] = function(data) {
         console.warn("receiveData from an unimplemented localmsg server (" + this.protocolName + ")");
     }
 
-    asyncImpl("I", this.connection.clientReceiveMessage(data));
+    if (this.connection.clientMessages.length > 0) {
+      return this.connection.getClientMessage(data);
+    }
+
+    this.connection.waitClientMessage(data);
 };
 
 Native["org/mozilla/io/LocalMsgConnection.closeConnection.()V"] = function() {

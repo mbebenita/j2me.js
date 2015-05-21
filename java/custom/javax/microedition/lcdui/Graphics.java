@@ -44,7 +44,7 @@ package javax.microedition.lcdui;
  * as
  * whether color is available and how many distinct gray levels are
  * available.
- * Applications may also use {@link javax.microedition.lcdui.Graphics#getDisplayColor(int)
+ * Applications may also use {@link Graphics#getDisplayColor(int)
  * getDisplayColor()} to obtain the actual color that would be displayed
  * for a requested color.
  * This enables applications to adapt their behavior to a device without
@@ -87,7 +87,7 @@ package javax.microedition.lcdui;
  * image buffer. The destination of rendered graphics depends on the
  * provenance of the graphics object. A graphics object for rendering
  * to the display is passed to the <code>Canvas</code> object's
- * {@link Canvas#paint(javax.microedition.lcdui.Graphics) paint()}
+ * {@link Canvas#paint(Graphics) paint()}
  * method. This is the only means by which a graphics object may
  * be obtained whose destination is the display. Furthermore, applications
  * may draw using this graphics object only for the duration of the
@@ -256,20 +256,20 @@ package javax.microedition.lcdui;
  *
  * <p>
  * Operations on the coordinate system,
- * such as {@link javax.microedition.lcdui.Graphics#translate(int, int) translate()},
+ * such as {@link Graphics#translate(int, int) translate()},
  * do not modify the clip.
  * The methods
- * {@link javax.microedition.lcdui.Graphics#getClipX() getClipX()},
- * {@link javax.microedition.lcdui.Graphics#getClipY() getClipY()},
- * {@link javax.microedition.lcdui.Graphics#getClipWidth() getClipWidth()} and
- * {@link javax.microedition.lcdui.Graphics#getClipHeight() getClipHeight()}
+ * {@link Graphics#getClipX() getClipX()},
+ * {@link Graphics#getClipY() getClipY()},
+ * {@link Graphics#getClipWidth() getClipWidth()} and
+ * {@link Graphics#getClipHeight() getClipHeight()}
  * must return a rectangle that,
  * if passed to <code>setClip</code> without an intervening change to
  * the <code>Graphics</code> object's coordinate system, must result in
  * the identical set of pixels in the clip.
  * The rectangle returned from the <code>getClip</code> family of methods
  * may differ from the clip rectangle that was requested in
- * {@link javax.microedition.lcdui.Graphics#setClip(int, int, int, int) setClip()}.
+ * {@link Graphics#setClip(int, int, int, int) setClip()}.
  * This can occur if the coordinate system has been changed or if
  * the implementation has chosen to intersect the clip rectangle
  * with the bounds of the destination of the <code>Graphics</code> object.
@@ -523,6 +523,9 @@ public class Graphics {
      */
     public static final int DOTTED = 1;
 
+    private native void initScreen0(int displayId);
+    private native void initImage0(Image img);
+
     /**
      * Create a Graphics object
      */
@@ -537,13 +540,7 @@ public class Graphics {
      * @param w the width of this Graphics object
      * @param h the height of this Graphics object
      */
-    void setDimensions(int w, int h) {
-        maxWidth  = (short) (w & 0x7fff);
-        maxHeight = (short) (h & 0x7fff);
-
-        transX = transY = 0;
-        setClip(0, 0, maxWidth, maxHeight);
-    }
+    native void setDimensions(int w, int h);
 
     /**
      * Translates the origin of the graphics context to the point
@@ -569,62 +566,47 @@ public class Graphics {
      * @see #getTranslateX()
      * @see #getTranslateY()
      */
-    public void translate(int x, int y) {
-        transX += x;
-        transY += y;
-    }
+    public native void translate(int x, int y);
 
     /**
      * Gets the X coordinate of the translated origin of this graphics context.
      * @return X of current origin
      */
-    public int getTranslateX() {
-        return transX;
-    }
+    public native int getTranslateX();
 
     /**
      * Gets the Y coordinate of the translated origin of this graphics context.
      * @return Y of current origin
      */
-    public int getTranslateY() {
-        return transY;
-    }
+    public native int getTranslateY();
 
     /**
      * Gets the current color.
      * @return an integer in form <code>0x00RRGGBB</code>
      * @see #setColor(int, int, int)
      */
-    public int getColor() {
-        return rgbColor;
-    }
+    public native int getColor();
 
     /**
      * Gets the red component of the current color.
      * @return integer value in range <code>0-255</code>
      * @see #setColor(int, int, int)
      */
-    public int getRedComponent() {
-        return (rgbColor >> 16) & 0xff;
-    }
+    public native int getRedComponent();
 
     /**
      * Gets the green component of the current color.
      * @return integer value in range <code>0-255</code>
      * @see #setColor(int, int, int)
      */
-    public int getGreenComponent() {
-        return (rgbColor >> 8) & 0xff;
-    }
+    public native int getGreenComponent();
 
     /**
      * Gets the blue component of the current color.
      * @return integer value in range <code>0-255</code>
      * @see #setColor(int, int, int)
      */
-    public int getBlueComponent() {
-        return rgbColor & 0xff;
-    }
+    public native int getBlueComponent();
 
     /**
      * Gets the current grayscale value of the color being used for rendering
@@ -640,9 +622,7 @@ public class Graphics {
      * @return integer value in range <code>0-255</code>
      * @see #setGrayScale
      */
-    public int getGrayScale() {
-        return gray;
-    }
+    public native int getGrayScale();
 
     /**
      * Sets the current color to the specified RGB values. All subsequent
@@ -657,17 +637,7 @@ public class Graphics {
      * are outside of range <code>0-255</code>
      * @see #getColor
      */
-    public void setColor(int red, int green, int blue) {
-        if ((red < 0)   || (red > 255) 
-            || (green < 0) || (green > 255)
-            || (blue < 0)  || (blue > 255)) {
-            throw new IllegalArgumentException("Value out of range");
-        }
-
-        rgbColor = (red << 16) | (green << 8) | blue;
-        gray = grayVal(red, green, blue);
-        pixel = getPixel(rgbColor, gray, false);
-    }
+    public native void setColor(int red, int green, int blue);
 
     /**
      * Sets the current color to the specified RGB values. All subsequent
@@ -683,17 +653,7 @@ public class Graphics {
      * @param RGB the color being set
      * @see #getColor
      */
-    public void setColor(int RGB) {
-        if (pixel == -1 || (RGB & 0x00ffffff) != rgbColor) {
-            int red   = (RGB >> 16) & 0xff;
-            int green = (RGB >> 8)  & 0xff;
-            int blue  = (RGB)  & 0xff;
-
-            rgbColor = RGB & 0x00ffffff;
-            gray = grayVal(red, green, blue);
-            pixel = getPixel(rgbColor, gray, false);
-        }
-    }
+    public native void setColor(int RGB);
 
     /**
      * Sets the current grayscale to be used for all subsequent
@@ -706,17 +666,7 @@ public class Graphics {
      * @throws IllegalArgumentException if the gray value is out of range
      * @see #getGrayScale
      */
-    public void setGrayScale(int value) {
-        if ((value < 0) || (value > 255)) {
-            throw new IllegalArgumentException("Gray value out of range");
-        }
-
-        if (pixel == -1 || gray != value) {
-            rgbColor = (value << 16) | (value << 8) | value;
-            gray = value;
-            pixel = getPixel(rgbColor, gray, true);
-        }
-    }
+    public native void setGrayScale(int value);
 
     /**
      * Gets the current font.
@@ -724,9 +674,7 @@ public class Graphics {
      * @see javax.microedition.lcdui.Font
      * @see #setFont(javax.microedition.lcdui.Font)
      */
-    public Font getFont() {
-        return currentFont;
-    }
+    public native Font getFont();
 
     /**
      * Sets the stroke style used for drawing lines, arcs, rectangles, and 
@@ -736,22 +684,14 @@ public class Graphics {
      * @throws IllegalArgumentException if the <code>style</code> is illegal
      * @see #getStrokeStyle
      */
-    public void setStrokeStyle(int style) {
-        if ((style != SOLID) && (style != DOTTED)) {
-            throw new IllegalArgumentException("Invalid line style");
-        }
-
-        this.style = style;
-    }
+    public native void setStrokeStyle(int style);
 
     /**
      * Gets the stroke style used for drawing operations.
      * @return stroke style, <code>SOLID</code> or <code>DOTTED</code>
      * @see #setStrokeStyle
      */
-    public int getStrokeStyle() {
-        return style;
-    }
+    public native int getStrokeStyle();
 
     /**
      * Sets the font for all subsequent text rendering operations.  If font is 
@@ -764,10 +704,8 @@ public class Graphics {
      * @see #drawString(java.lang.String, int, int, int)
      * @see #drawChars(char[], int, int, int, int, int)
      */
-    public void setFont(Font font) {
-        currentFont = (font == null) ? Font.getDefaultFont() : font;
-    }
-  
+    public native void setFont(Font font);
+
     /**
      * Gets the X offset of the current clipping area, relative
      * to the coordinate system origin of this graphics context.
@@ -778,9 +716,7 @@ public class Graphics {
      * @see #clipRect(int, int, int, int)
      * @see #setClip(int, int, int, int)
      */
-    public int getClipX() {
-        return clipX1 - transX;
-    }
+    public native int getClipX();
 
     /**
      * Gets the Y offset of the current clipping area, relative
@@ -792,9 +728,7 @@ public class Graphics {
      * @see #clipRect(int, int, int, int)
      * @see #setClip(int, int, int, int)
      */
-    public int getClipY() {
-        return clipY1 - transY;
-    }
+    public native int getClipY();
 
     /**
      * Gets the width of the current clipping area.
@@ -802,10 +736,7 @@ public class Graphics {
      * @see #clipRect(int, int, int, int)
      * @see #setClip(int, int, int, int)
      */
-    public int getClipWidth() {
-        return clipX2 - clipX1;
-    }
-
+    public native int getClipWidth();
 
     /**
      * Gets the height of the current clipping area.
@@ -813,9 +744,7 @@ public class Graphics {
      * @see #clipRect(int, int, int, int)
      * @see #setClip(int, int, int, int)
      */
-    public int getClipHeight() {
-        return clipY2 - clipY1;
-    }
+    public native int getClipHeight();
 
     /**
      * Internal routine to get the clip in a single call. The input
@@ -826,12 +755,7 @@ public class Graphics {
      *
      * @param region a four element array to hold the clip rectangle
      */
-    void getClip(int[] region) {
-        region[0] = clipX1 - transX;
-        region[1] = clipY1 - transY;
-        region[2] = clipX2 - transX;
-        region[3] = clipY2 - transY;
-    }
+    native void getClip(int[] region);
 
     /**
      * Intersects the current clip with the specified rectangle.
@@ -846,102 +770,7 @@ public class Graphics {
      * @param height the height of the rectangle to intersect the clip with
      * @see #setClip(int, int, int, int)
      */
-    public void clipRect(int x, int y, int width, int height) {
-
-        int translatedX1, translatedY1;
-        int translatedX2, translatedY2;
-
-        if (width <= 0 || height <= 0) {
-            clipX1 = clipY1 = clipX2 = clipY2 = 0;
-            clipped = true;
-            return;
-        }
-
-        // Translate the given coordinates
-        translatedX1 = x + transX;
-        translatedY1 = y + transY;
-
-        // Detect overflow
-        if (translatedX1 < 0) {
-            translatedX1 = (x < 0 || transX < 0) ? 0 : maxWidth;
-        }
-        if (translatedY1 < 0) {
-            translatedY1 = (y < 0 || transY < 0) ? 0 : maxHeight;
-        }
-
-        // If the passed in rect is below our current clip
-        if ((clipX2 < translatedX1) || (clipY2 < translatedY1)) {
-            // we have no intersection
-            clipX1 = clipY1 = clipX2 = clipY2 = 0;
-            clipped = true;
-            return;
-        }
-
-        if (translatedX1 > clipX1) {
-            clipX1 = (short) (translatedX1 & 0x7fff);
-            clipped = true;
-        }
-
-        if (translatedY1 > clipY1) {
-            clipY1 = (short) (translatedY1 & 0x7fff);
-            clipped = true;
-        }
-
-        // Start handling bottom right area
-
-        translatedX2 = x + transX + width;
-        translatedY2 = y + transY + height;
-
-        // Detect Overflow
-        if (translatedX2 < 0) {
-            translatedX2 = (x < 0 || transX < 0) ? translatedX1 : maxWidth;
-        }
-        if (translatedY2 < 0) {
-            translatedY2 = (y < 0 || transY < 0) ? translatedY1 : maxHeight;
-        }
-
-        // If the passed in rect is above our current clip
-        if (translatedX2 < clipX1 || translatedY2 < clipY1) {
-            // we have no intersection
-            clipX1 = clipY1 = clipX2 = clipY2 = 0;
-            clipped = true;
-            return;
-        }
-
-        if (translatedX2 <= clipX2) {
-            clipX2 = (short) translatedX2;
-            clipped = true;
-        }
-
-        if (translatedY2 <= clipY2) {
-            clipY2 = (short) translatedY2;
-            clipped = true;
-        }
-
-        if (clipped == true) {
-            if (clipX2 < clipX1)
-              clipX2 = clipX1;
-            if (clipY2 < clipY1)
-              clipY2 = clipY1;
-        }
-        /**
-         *  sanity check 
-
-         if (clipX1 < 0 || clipY1 < 0 ||
-             clipX2 > maxWidth || clipY2 > maxHeight ||
-             clipX1 > clipX2 || clipY1 > clipY2)
-             System.out.println("Graphics:clipRect error: clipX1 = "+clipX1+
-             " clipY1 = "+clipY1+" clipX2 = "+clipX2+" clipY2 = "+clipY2+
-              " maxWidth = "+maxWidth+" maxHeight = "+maxHeight);
-         if (runtimeClipEnforce)
-             System.out.println("Graphics:clipRect runtimeClipEnforce:"+
-             " systemClipX1 = "+systemClipX1+" systemClipY1 = "+systemClipY1+
-             " systemClipX2 = "+systemClipX2+" systemClipY2 = "+systemClipY2);
-
-         * end sanity check 
-         */
-
-    }
+    public native void clipRect(int x, int y, int width, int height);
 
     /**
      * Sets the current clip to the rectangle specified by the
@@ -953,102 +782,7 @@ public class Graphics {
      * @param height the height of the new clip rectangle
      * @see #clipRect(int, int, int, int)
      */
-    public void setClip(int x, int y, int width, int height) {
-
-        int translatedX1, translatedY1;
-        int translatedX2, translatedY2;
-
-        // If width or height is zero or less then zero,
-        // we do not preserve the current clipping and
-        // set all clipping values to zero.
-        if ((width <= 0) || (height <= 0)) {
-            clipX1 = clipY1 = clipX2 = clipY2 = 0;
-            clipped = true;
-            return;
-        }
-
-        // Translate the given coordinates
-        translatedX1 = x + transX;
-        translatedY1 = y + transY;
-
-        // Detect Overflow
-        if (translatedX1 < 0) {
-            translatedX1 = (x < 0 || transX < 0) ? 0 : maxWidth;
-        }
-        if (translatedY1 < 0) {
-            translatedY1 = (y < 0 || transY < 0) ? 0 : maxHeight;
-        }
-
-        clipX1 = (short)(translatedX1 & 0x7fff);
-        clipY1 = (short)(translatedY1 & 0x7fff);
-
-        if ((translatedX1 >= maxWidth) 
-            || (translatedY1 >= maxHeight)) {
-            clipX1 = clipY1 = clipX2 = clipY2 = 0;
-            clipped = true;
-            return;
-        }
-
-        // Check against the runtime library clip values
-        if (runtimeClipEnforce) {
-          if (clipX1 < systemClipX1)
-                  clipX1 = systemClipX1;
-          if (clipY1 < systemClipY1) {
-                  clipY1 = systemClipY1;
-          }
-        }
-
-        // Translate the given width, height to abs. coordinates
-        translatedX2 = x + transX + width;
-        translatedY2 = y + transY + height;
-
-        // Detect overflow
-        if (translatedX2 < 0) {
-            translatedX2 = (x < 0 || transX < 0) ? translatedX1 : maxWidth;
-        } else {
-          if (translatedX2 > maxWidth)
-            translatedX2 = maxWidth;
-        }
-        if (translatedY2 < 0) {
-            translatedY2 = (y < 0 || transY < 0) ? translatedY1 : maxHeight;
-        } else {
-          if (translatedY2 > maxHeight)
-            translatedY2 = maxHeight;
-        }
-
-        clipX2 = (short) (translatedX2 & 0x7FFF);
-        clipY2 = (short) (translatedY2 & 0x7FFF);
-
-        // Check against the runtime library clip values
-        if (runtimeClipEnforce) {
-          if (clipX2 > systemClipX2)
-                  clipX2 = systemClipX2;
-          if (clipY2 > systemClipY2)
-                  clipY2 = systemClipY2;
-        }
-
-        if ((clipX1 != 0) || (clipY1 != 0)
-                || (clipX2 != maxWidth) || (clipY2 != maxHeight)) {
-            clipped = true;
-        }
-
-        /**
-         *  sanity check
-        if (clipX1 < 0 || clipY1 < 0 ||
-            clipX2 > maxWidth || clipY2 > maxHeight ||
-            clipX1 > clipX2 || clipY1 > clipY2)
-          System.out.println("Graphics:setClip error: clipX1 = "+clipX1+
-              " clipY1 = "+clipY1+" clipX2 = "+clipX2+" clipY2 = "+clipY2+
-              " maxWidth = "+maxWidth+" maxHeight = "+maxHeight);
-        if (runtimeClipEnforce)
-          System.out.println("Graphics:setClip runtimeClipEnforce:"+
-              " systemClipX1 = "+systemClipX1+" systemClipY1 = "+systemClipY1+
-              " systemClipX2 = "+systemClipX2+" systemClipY2 = "+systemClipY2);
-
-         * end sanity check 
-         */
-
-    }
+    public native void setClip(int x, int y, int width, int height);
 
     /**
      * Draws a line between the coordinates <code>(x1,y1)</code> and
@@ -1104,8 +838,7 @@ public class Graphics {
      * @param arcHeight the vertical diameter of the arc at the four corners
      * @see #fillRoundRect(int, int, int, int, int, int)
      */
-    public native void drawRoundRect(int x, int y, int width, int height,
-                                     int arcWidth, int arcHeight);
+    public native void drawRoundRect(int x, int y, int width, int height, int arcWidth, int arcHeight);
  
     /**
      * Fills the specified rounded corner rectangle with the current color.
@@ -1120,9 +853,8 @@ public class Graphics {
      * @param arcHeight the vertical diameter of the arc at the four corners
      * @see #drawRoundRect(int, int, int, int, int, int)
      */
-    public native void fillRoundRect(int x, int y, int width, int height,
-                                     int arcWidth, int arcHeight);
-                          
+    public native void fillRoundRect(int x, int y, int width, int height, int arcWidth, int arcHeight);
+
     /**
      * Fills a circular or elliptical arc covering the specified rectangle.
      * <p>
@@ -1169,8 +901,7 @@ public class Graphics {
      * relative to the start angle.
      * @see #drawArc(int, int, int, int, int, int)
      */
-    public native void fillArc(int x, int y, int width, int height,
-                               int startAngle, int arcAngle);
+    public native void fillArc(int x, int y, int width, int height, int startAngle, int arcAngle);
 
     /**
      * Draws the outline of a circular or elliptical arc
@@ -1214,8 +945,7 @@ public class Graphics {
      * the start angle
      * @see #fillArc(int, int, int, int, int, int)
      */
-    public native void drawArc(int x, int y, int width, int height,
-                               int startAngle, int arcAngle);
+    public native void drawArc(int x, int y, int width, int height, int startAngle, int arcAngle);
 
     /**
      * Draws the specified <code>String</code> using the current font and color.
@@ -1229,8 +959,7 @@ public class Graphics {
      * @throws IllegalArgumentException if anchor is not a legal value
      * @see #drawChars(char[], int, int, int, int, int)
      */
-    public native void drawString(java.lang.String str,
-                                  int x, int y, int anchor);
+    public native void drawString(java.lang.String str, int x, int y, int anchor);
 
     /**
      * Draws the specified <code>String</code> using the current font and color.
@@ -1260,8 +989,7 @@ public class Graphics {
      * is not a legal value
      * @throws NullPointerException if <code>str</code> is <code>null</code>
      */
-    public native void drawSubstring(String str, int offset, int len,
-                                     int x, int y, int anchor);
+    public native void drawSubstring(String str, int offset, int len, int x, int y, int anchor);
 
     /**
      * Draws the specified character using the current font and color.
@@ -1307,8 +1035,7 @@ public class Graphics {
      *
      * @see #drawString(java.lang.String, int, int, int)
      */
-    public native void drawChars(char[] data, int offset, int length,
-                                 int x, int y, int anchor);
+    public native void drawChars(char[] data, int offset, int length, int x, int y, int anchor);
  
     /**
      * Draws the specified image by using the anchor point.
@@ -1336,15 +1063,7 @@ public class Graphics {
      * @throws NullPointerException if <code>img</code> is <code>null</code>
      * @see Image
      */
-    public void drawImage(Image image, int x, int y, int anchor) {
-        if (image == null) {
-            throw new NullPointerException();
-        }
-
-        if (!render(image, x, y, anchor)) {
-            throw new IllegalArgumentException("");
-        }
-    }
+    public native void drawImage(Image image, int x, int y, int anchor);
 
     /**
      * Copies a region of the specified source image to a location within
@@ -1442,20 +1161,7 @@ public class Graphics {
      * @throws IllegalArgumentException if the region to be copied exceeds
      * the bounds of the source image
      */
-    public void drawRegion(Image src, 
-                           int x_src, int y_src,
-                           int width, int height, 
-                           int transform,
-                           int x_dest, int y_dest, 
-                           int anchor) {
-        if (src == null) {
-            throw new NullPointerException();
-        }
-        if (!renderRegion(src, x_src, y_src, width, height,
-                          transform, x_dest, y_dest, anchor)) {
-            throw new IllegalArgumentException("");
-        }
-    }
+    public native void drawRegion(Image src, int x_src, int y_src, int width, int height, int transform, int x_dest, int y_dest, int anchor);
 
     /**
      * Copies the contents of a rectangular area
@@ -1526,17 +1232,7 @@ public class Graphics {
      * the bounds of the source image
      *
      */
-    public void copyArea(int x_src, int y_src, 
-                                      int width, int height,
-                                      int x_dest, int y_dest, int anchor) {
-
-        if (isScreenGraphics()) {
-            throw new IllegalStateException();
-        } else {
-            doCopyArea(x_src, y_src, width, height, 
-                       x_dest, y_dest, anchor);
-        }
-    }
+     public native void copyArea(int x_src, int y_src, int width, int height, int x_dest, int y_dest, int anchor);
 
     /**
      * Fills the specified triangle will the current color.  The lines
@@ -1551,28 +1247,7 @@ public class Graphics {
      * @param y3 the y coordinate of the third vertex of the triangle
      *
      */
-    public native void fillTriangle(int x1, int y1, 
-                                    int x2, int y2,
-                                    int x3, int y3);
-
-    /**
-     * Native implementation of CopyArea method.
-     *
-     * @param x_src  the x coordinate of upper left corner of source area
-     * @param y_src  the y coordinate of upper left corner of source area
-     * @param width  the width of the source area
-     * @param height the height of the source area
-     * @param x_dest the x coordinate of the destination anchor point
-     * @param y_dest the y coordinate of the destination anchor point
-     * @param anchor the anchor point for positioning the region within
-     *        the destination image
-     *
-     * @throws IllegalArgumentException if the region to be copied exceeds
-     * the bounds of the source image
-     */
-    private native void doCopyArea(int x_src, int y_src, 
-                                   int width, int height, 
-                                   int x_dest, int y_dest, int anchor);
+    public native void fillTriangle(int x1, int y1, int x2, int y2, int x3, int y3);
 
     /**
      * Renders a series of device-independent RGB+transparency values in a
@@ -1668,9 +1343,7 @@ public class Graphics {
      * @throws NullPointerException if <code>rgbData</code> is <code>null</code>
      *
      */
-    public native void drawRGB(int[] rgbData, int offset, int scanlength,
-                               int x, int y, int width, int height,
-                               boolean processAlpha);
+    public native void drawRGB(int[] rgbData, int offset, int scanlength, int x, int y, int width, int height, boolean processAlpha);
 
     /**
      * Gets the color that will be displayed if the specified color
@@ -1690,57 +1363,6 @@ public class Graphics {
      */
     public native int getDisplayColor(int color);
 
-
-    // private implementation //
-
-    /**
-     * The clip values are in the translated
-     * coordinate system and maintained as intersected
-     * with 0,0,maxWidth,maxHeight
-     */
-    private short clipX1, clipY1, clipX2, clipY2;
-
-    /** Translated x,y coordinates */
-    private int transX, transY;
-    /** 
-     * System clip to hold any system clipping.
-     * This saves the clip values imposed by
-     * the system (e.g. from Theme support).
-     * The clip values are in the translated
-     * coordinate system.
-     */
-    private short systemClipX1, systemClipY1, systemClipX2, systemClipY2;
-    /** used by dsPaint for saving translated values */ 
-    private int ax, ay;
-    /** A flag indicating the clipping state */
-    private boolean clipped = false;
-    /** Pixel values  (-1 when uninitialized) */
-    private int rgbColor, gray;
-    /** pixel value (-1 when uninitialized) */
-    private int pixel;
-    /** Line stroke style */
-    private int style;
-    /** The current Font */
-    private Font currentFont;
-    /** The maximum width and height */
-    private short maxWidth, maxHeight;
-    /** A flag indicating MIDP runtime library clip state */
-    private boolean runtimeClipEnforce = false;
-
-    /** 
-     * The display ID associated with the device Graphics.
-     * Note: that Graphics created with an Image will have display ID set
-     * to -1. For device Graphics it will be set in 
-     * <code> getScreenGraphics() </code>. 
-     */
-    private int displayId = -1;
-
-    /**
-     * If not null, this instance represent Graphics context for that
-     * Image.
-     */
-    private Image img;
-
     /**
      * Retrieve the Graphics context for the given Image
      *
@@ -1754,9 +1376,7 @@ public class Graphics {
         }
 
         Graphics g = new Graphics();
-        g.img = img;
-        g.setDimensions(img.getWidth(), img.getHeight());
-        g.resetGC();
+        g.initImage0(img);
 
         // construct and return a new ImageGraphics
         // object that uses the Image img as the 
@@ -1790,9 +1410,7 @@ public class Graphics {
         if (h > height) { h = height; }
 
         Graphics g = new Graphics();
-        g.img = img;
-        g.setDimensions(w, h);
-        g.resetGC();
+        g.initImage0(img);
         return g;
     }
 
@@ -1807,25 +1425,9 @@ public class Graphics {
      * @return Graphics 
      */
     static Graphics getScreenGraphics(int displayId, int width, int height) {
-
         Graphics g = new Graphics();
-        g.displayId = displayId;
-
-        g.img = null;
-        g.setDimensions(width, height);
-        g.resetGC();
-
+        g.initScreen0(displayId);
         return g;
-    }
-
-    /**
-     * Determines if this a <code>Graphics</code> object used to 
-     * represent the device. 
-     * @return true if this Graphics represents the device;
-     *         false - otherwise
-     */
-    boolean isScreenGraphics() {
-        return (displayId != -1);
     }
 
     /**
@@ -1836,19 +1438,13 @@ public class Graphics {
      * @param x2 The lower right x coordinate
      * @param y2 The lower right y coordinate
      */
-    void reset(int x1, int y1, int x2, int y2) {
-        resetGC();
-        transX = transY = 0;
-        setClip(x1, y1, x2 - x1, y2 - y1);
-    }
+    native void reset(int x1, int y1, int x2, int y2);
 
     /**
      * Reset this Graphics context to its default dimensions
      * (same as reset(0, 0, maxWidth, maxHeight)
      */
-    void reset() {
-        reset(0, 0, maxWidth, maxHeight);
-    }
+    native void reset();
 
     /**
      * Reset the Graphic context with all items related
@@ -1859,53 +1455,7 @@ public class Graphics {
      * Only Font, Style, and Color are reset in
      * this function.
      */
-    void resetGC() {
-        currentFont = Font.getDefaultFont();
-        style       = SOLID;
-        rgbColor    = gray = 0;
-        pixel       = getPixel(rgbColor, gray, true);
-    }
-
-
-    /**
-     * Preserve MIDP runtime GC.
-     * - Our internal MIDP clip to protect 
-     * it from MIDlet drawing on top of our widget.
-     * - Translation
-     *
-     * @param systemX The system upper left x coordinate
-     * @param systemY The system upper left y coordinate
-     * @param systemW The system width of the rectangle
-     * @param systemH The system height of the rectangle
-     */
-    void preserveMIDPRuntimeGC(int systemX, int systemY, int systemW,
-                               int systemH) {
-        runtimeClipEnforce = true;
-        clipRect(systemX, systemY, systemW, systemH);
-
-        // this is the first time, we setup 
-        // the systemClip values.
-        systemClipX1 = clipX1;
-        systemClipY1 = clipY1;
-        systemClipX2 = clipX2;
-        systemClipY2 = clipY2;
-
-        // Preserve the translation system
-        translate(systemX, systemY);
-        ax = getTranslateX();
-        ay = getTranslateY();
-    }
-
-    /**
-     * Restore the runtime GC.
-     * - Release the internal runtime clip values by
-     * unsetting the variable.
-     * - Restore the original translation
-     */
-    void restoreMIDPRuntimeGC() {
-        runtimeClipEnforce = false;
-        translate(ax-getTranslateX(), ay-getTranslateY());
-    }
+    native void resetGC();
 
     /**
      * Renders provided Image onto this Graphics object.
@@ -1921,109 +1471,28 @@ public class Graphics {
     native boolean render(Image img, int x, int y, int anchor);
 
     /**
-     * Renders the specified region of the provided Image object
-     * onto this Graphics object.
-     *
-     * @param img  the Image object to be rendered
-     * @param x_src the x coordinate of the upper left corner of the region
-     * within the source image to copy
-     * @param y_src the y coordinate of the upper left corner of the region
-     * within the source image to copy
-     * @param width the width of the region to copy
-     * @param height the height of the region to copy
-     * @param transform the desired transformation for the selected region
-     * being copied
-     * @param x_dest the x coordinate of the anchor point in the
-     * destination drawing area
-     * @param y_dest the y coordinate of the anchor point in the
-     * destination drawing area
-     * @param anchor the anchor point for positioning the region within
-     * the destination image
-     *
-     * @return false if <code>src</code> is the same image as the
-     * destination of this <code>Graphics</code> object,
-     * or <code>transform</code> is invalid,
-     * or <code>anchor</code> is invalid,
-     * or the region to be copied exceeds the bounds of the source image.
-     *
-     * @see Image
-     */
-    native boolean renderRegion(Image img,
-                                int x_src, int y_src,
-                                int width, int height,
-                                int transform,
-                                int x_dest, int y_dest,
-                                int anchor);
-
-    /**
-     * Get a gray value given the RGB values
-     *
-     * @param red The Red pixel value
-     * @param green The Green pixel value
-     * @param blue The Blue pixel value
-     * @return int The grayscale value corresponding to the RGB color
-     */
-    private static int grayVal(int red, int green, int blue) {
-        /* CCIR Rec 601 luma (nonlinear rgb to nonlinear "gray") */
-        return (red*76 + green*150 + blue*29) >> 8;
-    }
-
-    /**
-     * Get a specific pixel value
-     *
-     * @param rgb
-     * @param gray
-     * @param isGray
-     * @return int
-     */
-    private native int getPixel(int rgb, int gray, boolean isGray);
-
-    /**
      * Returns the maximal width available for the clipping
      * withing this Graphics context
      * @return The width of the Graphics context
      */
-    short getMaxWidth() {
-        return maxWidth;
-    }
+    native short getMaxWidth();
 
     /**
      * Returns the maximal height available for the clipping
      * withing this Graphics context
      * @return The height of the Graphics context
      */
-    short getMaxHeight() {
-        return maxHeight;
-    }
-
-    /**
-     * The creator of this Graphics instance
-     *
-     * IMPL_NOTE: The information about Graphics object creator is
-     *   needed to JSRs (e.g. JSR239) that are given with Graphics
-     *   instance and has no further information on its creator changes,
-     *   e.g. of resizing, but at the same time should be able to paint
-     *   properly into this Graphics.
-     */
-    private Object creator = null;
+    native short getMaxHeight();
 
     /**
      * Returns the creator of this Graphics object
      * @return Graphics creator reference
      */
-    Object getCreator() {
-        return creator;
-    }
+    native Object getCreator();
 
     /**
      * Sets the creator of this Graphics object
      * @param creator the reference to creator of this Graphics object
      */
-    void setCreator(Object creator) {
-        // Ignore repeated attempts to set creator
-        if (this.creator == null) {
-            this.creator = creator;
-        }
-    }
-    
+    native void setCreator(Object creator);
 } // class Graphics

@@ -1,6 +1,32 @@
+/*
+ * Copyright (c) 2009, 2011, Oracle and/or its affiliates. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+ *
+ * This code is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 only, as
+ * published by the Free Software Foundation.
+ *
+ * This code is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ * version 2 for more details (a copy is included in the LICENSE file that
+ * accompanied this code).
+ *
+ * You should have received a copy of the GNU General Public License version
+ * 2 along with this work; if not, write to the Free Software Foundation,
+ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ *
+ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
+ * or visit www.oracle.com if you need additional information or have any
+ * questions.
+ */
+
 module J2ME.Bytecode {
   import assert = Debug.assert;
+  import pushUnique = ArrayUtilities.pushUnique;
   import Uint32ArrayBitSet = BitSets.Uint32ArrayBitSet;
+
+  declare var Relooper;
 
   var writer = new IndentingWriter();
 
@@ -12,14 +38,13 @@ module J2ME.Bytecode {
     public isLoopEnd: boolean;
     public hasHandlers: boolean;
     public blockID: number;
+    public relooperBlockID: number;
 
-    public region: C4.IR.Region;
-
-    // public FixedWithNextNode firstInstruction;
+    public region: any;
 
     public successors: Block [];
+    public predecessors: Block [];
     public normalSuccessors: number;
-    public numberOfPredecessors: number = 0;
 
     visited: boolean;
     active: boolean;
@@ -27,8 +52,13 @@ module J2ME.Bytecode {
     public exits: number = 0; // long
     public loopID: number = -1; // long
 
+    public isInnerLoopHeader() {
+      return this.isLoopHeader && (this.loops !== (1 << this.loopID));
+    }
+
     constructor() {
       this.successors = [];
+      this.predecessors = [];
     }
 
     public clone(): Block {
@@ -43,31 +73,32 @@ module J2ME.Bytecode {
       block.loopID = this.loopID;
       block.blockID = this.blockID;
       block.successors = this.successors.slice(0);
-      block.numberOfPredecessors = this.numberOfPredecessors;
+      block.predecessors = this.predecessors.slice(0);
       return block;
     }
   }
 
   export class ExceptionBlock extends Block {
-    public handler: ExceptionHandler ;
+    public handler: ExceptionEntryView;
     public deoptBci: number;
   }
 
   export class BlockMap {
     method: MethodInfo;
     blocks: Block [];
+    hasBackwardBranches: boolean;
+    invokeCount: number;
     private blockMap: Block [];
     private startBlock: Block;
     private canTrap: Uint32ArrayBitSet;
-    // handlers: ExceptionHandler [];
-    exceptionHandlers: ExceptionHandler [];
 
     constructor(method: MethodInfo) {
       this.blocks = [];
       this.method = method;
-      this.blockMap = new Array<Block>(method.code.length);
+      this.hasBackwardBranches = false;
+      this.invokeCount = 0;
+      this.blockMap = new Array<Block>(method.codeAttribute.code.length);
       this.canTrap = new Uint32ArrayBitSet(this.blockMap.length);
-      this.exceptionHandlers = this.method.exception_table;
     }
 
     build() {
@@ -78,15 +109,12 @@ module J2ME.Bytecode {
       this.fixLoopBits();
       this.initializeBlockIDs();
       this.computeLoopStores();
-
-      // writer.writeLn("Blocks: " + this.blocks.length);
-      // writer.writeLn(JSON.stringify(this.blocks, null, 2));
     }
 
     private makeExceptionEntries() {
       // start basic blocks at all exception handler blocks and mark them as exception entries
-      for (var i = 0; i < this.exceptionHandlers.length; i++) {
-        var handler = this.exceptionHandlers[i];
+      for (var i = 0; i < this.method.exception_table_length; i++) {
+        var handler = this.method.getExceptionEntryViewByIndex(i);
         var block = this.makeBlock(handler.handler_pc);
         block.isExceptionEntry = true;
       }
@@ -104,6 +132,17 @@ module J2ME.Bytecode {
 
     public getBlock(bci: number) {
       return this.blockMap[bci];
+    }
+
+    public getOSREntryPoints() {
+      var points = [];
+      for (var i = 0; i < this.blocks.length; i++) {
+        var block = this.blocks[i];
+        if (block.isLoopHeader && !block.isInnerLoopHeader()) {
+          points.push(block.startBci);
+        }
+      }
+      return points;
     }
 
     private makeBlock(startBci: number): Block {
@@ -147,7 +186,13 @@ module J2ME.Bytecode {
     }
 
     private setSuccessors(predBci: number, successors: Block []) {
-      // writer.writeLn("setSuccessors " + predBci + " " + successors.map(x => x.startBci).join(", "));
+      if (!this.hasBackwardBranches) {
+        for (var i = 0; i < successors.length; i++) {
+          if (successors[i].startBci < predBci) {
+            this.hasBackwardBranches = true;
+          }
+        }
+      }
       var predecessor = this.blockMap[predBci];
       assert (predecessor.successors.length === 0, predecessor.successors.map(x => x.startBci).join(", "));
       ArrayUtilities.pushMany(predecessor.successors, successors);
@@ -156,40 +201,13 @@ module J2ME.Bytecode {
 
     public canTrapAt(opcode: Bytecodes, bci: number): boolean {
       return Bytecode.canTrap(opcode);
-      //switch (opcode) {
-      //  case Bytecodes.INVOKESTATIC:
-      //  case Bytecodes.INVOKESPECIAL:
-      //  case Bytecodes.INVOKEVIRTUAL:
-      //  case Bytecodes.INVOKEINTERFACE:
-      //    return true;
-      //  case Bytecodes.IASTORE:
-      //  case Bytecodes.LASTORE:
-      //  case Bytecodes.FASTORE:
-      //  case Bytecodes.DASTORE:
-      //  case Bytecodes.AASTORE:
-      //  case Bytecodes.BASTORE:
-      //  case Bytecodes.CASTORE:
-      //  case Bytecodes.SASTORE:
-      //  case Bytecodes.IALOAD:
-      //  case Bytecodes.LALOAD:
-      //  case Bytecodes.FALOAD:
-      //  case Bytecodes.DALOAD:
-      //  case Bytecodes.AALOAD:
-      //  case Bytecodes.BALOAD:
-      //  case Bytecodes.CALOAD:
-      //  case Bytecodes.SALOAD:
-      //  case Bytecodes.PUTFIELD:
-      //  case Bytecodes.GETFIELD:
-      //    return false; // ???
-      //}
-      //return false;
     }
 
     private iterateOverBytecodes() {
       // iterate over the bytecodes top to bottom.
       // mark the entrypoints of basic blocks and build lists of successors for
       // all bytecodes that end basic blocks (i.e. goto, ifs, switches, throw, jsr, returns, ret)
-      var code = this.method.code;
+      var code = this.method.codeAttribute.code;
       var current: Block = null;
       var bci = 0;
       while (bci < code.length) {
@@ -265,16 +283,27 @@ module J2ME.Bytecode {
             switch (opcode2) {
               case Bytecodes.RET: {
                 writer.writeLn("RET");
-                // current.endsWithRet = true;
                 current = null;
                 break;
               }
             }
             break;
           }
+          case Bytecodes.INVOKEVIRTUAL:
+          case Bytecodes.INVOKESPECIAL:
+          case Bytecodes.INVOKESTATIC:
+          case Bytecodes.INVOKEINTERFACE:
+            this.invokeCount ++;
+            if (this.canTrapAt(opcode, bci)) {
+              this.canTrap.set(bci);
+            }
+            break;
           default: {
             if (this.canTrapAt(opcode, bci)) {
               this.canTrap.set(bci);
+            }
+            if (Bytecode.isInvoke(opcode)) {
+              this.invokeCount ++;
             }
           }
         }
@@ -296,8 +325,8 @@ module J2ME.Bytecode {
         block.isLoopHeader = true;
         if (block.isExceptionEntry) {
           // Loops that are implicitly formed by an exception handler lead to all sorts of corner cases.
-          // Don't compile such methods for now, until we see a concrete case that allows checking for correctness.
-          // throw new CompilerBailout("Loop formed by an exception handler");
+          // However, this doesn't affect the baseline JIT, so don't bail out.
+          // TODO: Revisit for OPT JIT.
         }
         if (this._nextLoop >= 32) {
           // This restriction can be removed by using a fall-back to a BitSet in case we have more than 32 loops
@@ -314,13 +343,13 @@ module J2ME.Bytecode {
 
     // catch_type
 
-    private handlerIsCatchAll(handler: ExceptionHandler) {
+    private handlerIsCatchAll(handler: ExceptionEntryView) {
       return handler.catch_type === 0;
     }
 
-    private exceptionDispatch: Map<ExceptionHandler, ExceptionBlock> = new Map<ExceptionHandler, ExceptionBlock>();
+    private exceptionDispatch: Map<ExceptionEntryView, ExceptionBlock> = new Map<ExceptionEntryView, ExceptionBlock>();
 
-    private makeExceptionDispatch(handlers: ExceptionHandler [], index: number, bci: number): Block {
+    private makeExceptionDispatch(handlers: ExceptionEntryView [], index: number, bci: number): Block {
       var handler = handlers[index];
       if (this.handlerIsCatchAll(handler)) {
         return this.blockMap[handler.handler_pc];
@@ -345,9 +374,9 @@ module J2ME.Bytecode {
       var length = this.canTrap.length;
       for (var bci = this.canTrap.nextSetBit(0, length); bci >= 0; bci = this.canTrap.nextSetBit(bci + 1, length)) {
         var block = this.blockMap[bci];
-        var handlers: ExceptionHandler [] = null;
-        for (var i = 0; i < this.exceptionHandlers.length; i++) {
-          var handler = this.exceptionHandlers[i];
+        var handlers: ExceptionEntryView [] = null;
+        for (var i = 0; i < this.method.exception_table_length; i++) {
+          var handler = this.method.getExceptionEntryViewByIndex(i);
           if (handler.start_pc <= bci && bci < handler.end_pc) {
             if (!handlers) {
               handlers = [];
@@ -455,7 +484,7 @@ module J2ME.Bytecode {
 
       for (var i = 0; i < block.successors.length; i++) {
         var successor = block.successors[i];
-        successor.numberOfPredecessors ++;
+        pushUnique(successor.predecessors, block);
         // Recursively process successors.
         loops |= this.computeBlockOrderFrom(block.successors[i]);
         if (successor.active) {
@@ -480,7 +509,7 @@ module J2ME.Bytecode {
       ", ").padRight(" ", 5) +
       "bci: [" + block.startBci + ", " + block.endBci + "]" +
       (block.successors.length ? ", successors: => " + block.successors.map(b => b.blockID).join(", ") : "") +
-      (block.isLoopHeader ? " isLoopHeader" : "") +
+      (block.isLoopHeader ? " isLoopHeader, inner: " + block.isInnerLoopHeader() : "") +
       (block.isLoopEnd ? " isLoopEnd" : "") +
       (block.isExceptionEntry ? " isExceptionEntry" : "") +
       (block.hasHandlers ? " hasHandlers" : "") +
@@ -490,7 +519,7 @@ module J2ME.Bytecode {
     }
 
     public trace(writer: IndentingWriter, traceBytecode: boolean = false) {
-      var code = this.method.code;
+      var code = this.method.codeAttribute.code;
       var stream = new BytecodeStream(code);
 
       writer.enter("Block Map: " + this.blocks.map(b => b.blockID).join(", "));
@@ -509,5 +538,38 @@ module J2ME.Bytecode {
       });
       writer.outdent();
     }
+
+    public traceDOTFile(writer: IndentingWriter) {
+      writer.enter("digraph CFG {");
+
+      writer.writeLn("graph [bgcolor = gray10];");
+      writer.writeLn("edge [fontname = Consolas, fontsize = 11, color = white, fontcolor = white];");
+      writer.writeLn("node [shape = box, fontname = Consolas, fontsize = 11, color = white, fontcolor = black, style = filled];");
+      writer.writeLn("rankdir = TB;");
+
+
+      var blocks = this.blocks;
+      blocks.forEach(function (block) {
+        var label = "B" + block.blockID + " " +
+          (block.isLoopHeader ? "H" : "") +
+          (block.isLoopEnd ? "E" : "") +
+          // (block.isExceptionEntry ? "X" : "") +
+          // (block.hasHandlers ? "X" : "") +
+          " l:" + block.loops.toString(2) +
+          " e:" + block.exits.toString(2) +
+          " i:" + block.loopID +
+          " p:" + block.predecessors.length;
+
+        writer.writeLn("B" + block.blockID + " [label = \"" + label + "\"];");
+      });
+
+      blocks.forEach(function (block) {
+        block.successors.forEach(function (successor) {
+          writer.writeLn("B" + block.blockID + " -> " + "B" + successor.blockID);
+        });
+      });
+      writer.leave("}");
+    }
+
   }
 }

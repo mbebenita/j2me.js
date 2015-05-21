@@ -23,8 +23,8 @@
    *    native: the native console (via the *dump* function)
    *    terminal: a faster canvas based console if Shumway.js is included.
    */
-  var ENABLED_CONSOLE_TYPES = (urlParams.logConsole || "page").split(",");
-  var minLogLevel = LOG_LEVELS[urlParams.logLevel || "log"];
+  var ENABLED_CONSOLE_TYPES = (config.logConsole || "page").split(",");
+  var minLogLevel = LOG_LEVELS[config.logLevel || (config.release ? "error" : "log")];
 
 
   //================================================================
@@ -45,19 +45,31 @@
     }
 
     this.levelName = levelName;
-    this.ctx = $ ? $.ctx : null;
+    this.ctx = typeof $ !== "undefined" && $ ? $.ctx : null;
     this.logLevel = LOG_LEVELS[levelName];
     this.args = args;
     this.time = performance.now() - startTime;
   }
 
+  function padRight(str, c, n) {
+    var length = str.length;
+    if (!c || length >= n) {
+      return str;
+    }
+    var max = (n - length) / c.length;
+    for (var i = 0; i < max; i++) {
+      str += c;
+    }
+    return str;
+  }
+
   LogItem.prototype = {
     get messagePrefix() {
-      var s = J2ME.Context.currentContextPrefix();
+      var s = typeof J2ME !== "undefined" ? J2ME.Context.currentContextPrefix() : "";
       if (false) {
         s = this.time.toFixed(2) + " " + s;
       }
-      return s.toString().padRight(" ", 4) + " | ";
+      return padRight(s.toString(), " ", 8) + " | ";
     },
 
     get message() {
@@ -91,7 +103,9 @@
     },
 
     matchesCurrentFilters: function() {
-      return this.logLevel >= minLogLevel;
+      return (this.logLevel >= minLogLevel &&
+              (CONSOLES.page.currentFilterText === "" ||
+               this.searchPredicate.indexOf(CONSOLES.page.currentFilterText) !== -1));
     }
   };
 
@@ -152,33 +166,18 @@
    * WebConsole: The standard console.log() and friends.
    */
   function WebConsole() {
-    this.buffer = "";
   }
 
   WebConsole.prototype = {
-    flush: function() {
-      if (this.buffer.length) {
-        var temp = this.buffer;
-        this.buffer = "";
-        console.info(temp);
-      }
-    },
-
     push: function(item) {
       if (item.matchesCurrentFilters()) {
-        this.flush(); // Preserve order w/r/t console.print().
-        windowConsole[item.levelName].apply(windowConsole, item.args);
+        if (consoleBuffer.length) {
+          // Preserve order w/r/t console.print().
+          flushConsoleBuffer();
+        }
+        windowConsole[item.levelName].apply(windowConsole, [item.message]);
       }
     },
-
-    /** Print one character to the output (buffered). */
-    print: function(ch) {
-      if (ch === 10) {
-        this.flush();
-      } else {
-        this.buffer += String.fromCharCode(ch);
-      }
-    }
   };
 
   /**
@@ -190,7 +189,7 @@
   NativeConsole.prototype = {
     push: function(item) {
       if (item.matchesCurrentFilters()) {
-        dumpLine(item.message);
+        dump(item.message + "\n");
       }
     }
   };
@@ -285,12 +284,9 @@
     terminal: typeof Terminal === "undefined" ? new WebConsole() : new TerminalConsole("#consoleContainer")
   };
 
-  var print = CONSOLES.web.print.bind(CONSOLES.web);
-
   // If we're only printing to the web console, then use the original console
   // object, so that file/line number references show up correctly in it.
   if (ENABLED_CONSOLE_TYPES.length === 1 && ENABLED_CONSOLE_TYPES[0] === "web") {
-    windowConsole.print = print;
     return;
   }
 
@@ -307,14 +303,19 @@
   });
 
   var logLevelSelect = document.querySelector('#loglevel');
+  var consoleFilterTextInput = document.querySelector('#console-filter-input');
+
   function updateFilters() {
     minLogLevel = logLevelSelect.value;
+    CONSOLES.page.currentFilterText = consoleFilterTextInput.value.toLowerCase();
     window.dispatchEvent(new CustomEvent('console-filters-changed'));
   }
 
   logLevelSelect.value = minLogLevel;
   logLevelSelect.addEventListener('change', updateFilters);
 
+  consoleFilterTextInput.value = "";
+  consoleFilterTextInput.addEventListener('input', updateFilters);
 
   //----------------------------------------------------------------
 
@@ -326,13 +327,12 @@
     });
   };
 
-  window.console = {
-    trace: logAtLevel.bind(null, "trace"),
-    log: logAtLevel.bind(null, "log"),
-    info: logAtLevel.bind(null, "info"),
-    warn: logAtLevel.bind(null, "warn"),
-    error: logAtLevel.bind(null, "error"),
-    print: print
-  };
+  window.console = Object.create(windowConsole, {
+    trace: { value: logAtLevel.bind(null, "trace") },
+    log: { value: logAtLevel.bind(null, "log") },
+    info: { value: logAtLevel.bind(null, "info") },
+    warn: { value: logAtLevel.bind(null, "warn") },
+    error: { value: logAtLevel.bind(null, "error") },
+  });
 
 })();

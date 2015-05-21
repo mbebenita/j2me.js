@@ -1,9 +1,8 @@
 module J2ME {
-  declare var util;
-  declare var Instrument;
-  declare var Promise;
+  declare var util, config;
 
   import BytecodeStream = Bytecode.BytecodeStream;
+  import BlockMap = Bytecode.BlockMap;
   import checkArrayBounds = J2ME.checkArrayBounds;
   import checkDivideByZero = J2ME.checkDivideByZero;
   import checkDivideByZeroLong = J2ME.checkDivideByZeroLong;
@@ -13,7 +12,7 @@ module J2ME {
   import popManyInto = ArrayUtilities.popManyInto;
 
   export var interpreterCounter = null; // new Metrics.Counter(true);
-  export var interpreterMethodCounter = null; // new Metrics.Counter(true);
+  export var interpreterMethodCounter = new Metrics.Counter(true);
 
   var traceArrayAccess = false;
 
@@ -26,12 +25,20 @@ module J2ME {
     traceWriter.writeLn(toDebugString(array) + "[" + index + "] (" + toDebugString(array[index]) + ")");
   }
 
+  function classInitAndUnwindCheck(classInfo: ClassInfo, pc: number) {
+    classInitCheck(classInfo);
+    if (U) {
+      $.ctx.current().pc = pc;
+      return;
+    } 
+  }
+
   /**
    * Optimize method bytecode.
    */
   function optimizeMethodBytecode(methodInfo: MethodInfo) {
     interpreterCounter && interpreterCounter.count("optimize: " + methodInfo.implKey);
-    var stream = new BytecodeStream(methodInfo.code);
+    var stream = new BytecodeStream(methodInfo.codeAttribute.code);
     while (stream.currentBC() !== Bytecodes.END) {
       if (stream.rawCurrentBC() === Bytecodes.WIDE) {
         stream.next();
@@ -59,122 +66,68 @@ module J2ME {
     methodInfo.isOptimized = true;
   }
 
-  function resolve(index: number, classInfo: ClassInfo, isStatic: boolean = false): any {
-    return classInfo.resolve(index, isStatic);
-  }
-
-  function resolveField(index: number, classInfo: ClassInfo, isStatic: boolean): FieldInfo {
-    return <FieldInfo><any>resolve(index, classInfo, isStatic);
-  }
-
-  function resolveClass(index: number, classInfo: ClassInfo, isStatic: boolean): ClassInfo {
-    var classInfo: ClassInfo = <any>resolve(index, classInfo, isStatic);
+  function resolveClass(index: number, classInfo: ClassInfo): ClassInfo {
+    var classInfo = classInfo.constantPool.resolveClass(index);
     linkKlass(classInfo);
     return classInfo;
-  }
-
-  function resolveMethod(index: number, classInfo: ClassInfo, isStatic: boolean): MethodInfo {
-    return <MethodInfo><any>resolve(index, classInfo, isStatic);
   }
 
   /**
    * Debugging helper to make sure native methods were implemented correctly.
    */
   function checkReturnValue(methodInfo: MethodInfo, returnValue: any) {
-    if (returnValue instanceof Promise) {
-      console.error("You forgot to call asyncImpl():", methodInfo.implKey);
-    } else if (methodInfo.getReturnKind() === Kind.Void && returnValue) {
-      console.error("You returned something in a void method:", methodInfo.implKey);
-    } else if (methodInfo.getReturnKind() !== Kind.Void && (returnValue === undefined) &&
-      !U) {
-      console.error("You returned undefined in a non-void method:", methodInfo.implKey);
-    } else if (typeof returnValue === "string") {
-      console.error("You returned a non-wrapped string:", methodInfo.implKey);
-    } else if (returnValue === true || returnValue === false) {
-      console.error("You returned a JS boolean:", methodInfo.implKey);
+    if (U) {
+      if (typeof returnValue !== "undefined") {
+        assert(false, "Expected undefined return value during unwind, got " + returnValue + " in " + methodInfo.implKey);
+      }
+      return;
+    }
+    if (!(getKindCheck(methodInfo.returnKind)(returnValue))) {
+      assert(false, "Expected " + Kind[methodInfo.returnKind] + " return value, got " + returnValue + " in " + methodInfo.implKey);
     }
   }
 
-  /**
-   * The number of opcodes executed thus far.
-   */
-  export var ops = 0;
+  export var onStackReplacementCount = 0;
 
   /**
    * Temporarily used for fn.apply.
    */
   var argArray = [];
 
-  var CONTINUE_AFTER_POPFRAME = {}; // Sentinel object.
-
-  function popFrame(consumes) {
-    var ctx = $.ctx;
-    var frame = ctx.current();
-    var classInfo = frame.methodInfo.classInfo;
-    var stack = frame.stack;
-
-    if (frame.lockObject)
-      ctx.monitorExit(frame.lockObject);
-    var callee = frame;
-    ctx.frames.pop();
-    var caller = frame = ctx.frames.length === 0 ? null : ctx.current();
-    Instrument.callExitHooks(callee.methodInfo, caller, callee);
-    if (frame === null) {
-      var returnValue = null;
-      switch (consumes) {
-        case 2:
-          returnValue = callee.stack.pop2();
-          break;
-        case 1:
-          returnValue = callee.stack.pop();
-          break;
-      }
-      return returnValue;
-    }
-    stack = frame.stack;
-    switch (consumes) {
-      case 2:
-        stack.push2(callee.stack.pop2());
-        break;
-      case 1:
-        stack.push(callee.stack.pop());
-        break;
-    }
-    return CONTINUE_AFTER_POPFRAME;
-  }
-
   function buildExceptionLog(ex, stackTrace) {
-    var className = ex.klass.classInfo.className;
-    var detailMessage = util.fromJavaString(CLASSES.getField(ex.klass.classInfo, "I.detailMessage.Ljava/lang/String;").get(ex));
+    var classInfo: ClassInfo = ex.klass.classInfo;
+    var className = classInfo.getClassNameSlow();
+    var detailMessage = J2ME.fromJavaString(classInfo.getFieldByName(toUTF8("detailMessage"), toUTF8("Ljava/lang/String;"), false).get(ex));
     return className + ": " + (detailMessage || "") + "\n" + stackTrace.map(function(entry) {
-      return " - " + entry.className + "." + entry.methodName + "(), pc=" + entry.offset;
+      return " - " + entry.className + "." + entry.methodName + entry.methodSignature + ", pc=" + entry.offset;
     }).join("\n") + "\n\n";
   }
 
-  function throw_(ex) {
+  function tryCatch(e) {
     var ctx = $.ctx;
     var frame = ctx.current();
     var stack = frame.stack;
 
-    var exClass = ex.class;
-    if (!ex.stackTrace) {
-      ex.stackTrace = [];
+    var exClass = e.class;
+    if (!e.stackTrace) {
+      e.stackTrace = [];
     }
 
-    var stackTrace = ex.stackTrace;
+    var stackTrace = e.stackTrace;
 
     do {
-      var exception_table = frame.methodInfo.exception_table;
       var handler_pc = null;
-      for (var i=0; exception_table && i<exception_table.length; i++) {
-        if (frame.opPc >= exception_table[i].start_pc && frame.opPc < exception_table[i].end_pc) {
-          if (exception_table[i].catch_type === 0) {
-            handler_pc = exception_table[i].handler_pc;
+
+      for (var i = 0; i < frame.methodInfo.exception_table_length; i++) {
+        var exceptionEntryView = frame.methodInfo.getExceptionEntryViewByIndex(i);
+        if (frame.opPC >= exceptionEntryView.start_pc && frame.opPC < exceptionEntryView.end_pc) {
+          if (exceptionEntryView.catch_type === 0) {
+            handler_pc = exceptionEntryView.handler_pc;
             break;
           } else {
-            classInfo = resolveClass(exception_table[i].catch_type, frame.methodInfo.classInfo, false);
-            if (isAssignableTo(ex.klass, classInfo.klass)) {
-              handler_pc = exception_table[i].handler_pc;
+            classInfo = resolveClass(exceptionEntryView.catch_type, frame.methodInfo.classInfo);
+            if (isAssignableTo(e.klass, classInfo.klass)) {
+              handler_pc = exceptionEntryView.handler_pc;
               break;
             }
           }
@@ -182,63 +135,78 @@ module J2ME {
       }
 
       var classInfo = frame.methodInfo.classInfo;
-      if (classInfo && classInfo.className) {
+      if (classInfo && classInfo.getClassNameSlow()) {
         stackTrace.push({
-          className: classInfo.className,
+          className: classInfo.getClassNameSlow(),
           methodName: frame.methodInfo.name,
+          methodSignature: frame.methodInfo.signature,
           offset: frame.pc
         });
       }
 
       if (handler_pc != null) {
         stack.length = 0;
-        stack.push(ex);
+        stack.push(e);
         frame.pc = handler_pc;
 
         if (VM.DEBUG_PRINT_ALL_EXCEPTIONS) {
-          console.error(buildExceptionLog(ex, stackTrace));
+          console.error(buildExceptionLog(e, stackTrace));
         }
 
         return;
       }
-      popFrame(0);
+      frame.free();
+      ctx.popFrame();
       frame = ctx.current();
-      stack = frame && frame.stack || null;
-    } while (frame);
-
-    if (ctx.frameSets.length === 0) {
-      ctx.kill();
-
-      if (ctx.thread && ctx.thread.waiting && ctx.thread.waiting.length > 0) {
-        console.error(buildExceptionLog(ex, stackTrace));
-
-        ctx.thread.waiting.forEach(function(waitingCtx, n) {
-          ctx.thread.waiting[n] = null;
-          waitingCtx.wakeup(ctx.thread);
-        });
+      if (Frame.isMarker(frame)) {
+        break;
       }
-      throw new Error(buildExceptionLog(ex, stackTrace));
+      stack = frame.stack;
+    } while (true);
+
+    if (ctx.current() === Frame.Start) {
+      ctx.kill();
+      if (ctx.thread && ctx.thread._lock && ctx.thread._lock.waiting.length > 0) {
+        console.error(buildExceptionLog(e, stackTrace));
+        for (var i = 0; i < ctx.thread._lock.waiting.length; i++) {
+          var waitingCtx = ctx.thread._lock.waiting[i];
+          ctx.thread._lock.waiting[i] = null;
+          waitingCtx.wakeup(ctx.thread);
+        }
+      }
+      throw new Error(buildExceptionLog(e, stackTrace));
     } else {
-      throw ex;
+      throw e;
     }
   }
 
-  export function interpret() {
+  export function interpret2() {
     var ctx = $.ctx;
-    var frame = ctx.current();
 
+    // These must always be kept up to date with the current frame.
+    var frame = ctx.current();
+    release || assert (!Frame.isMarker(frame));
     var mi = frame.methodInfo;
+    var ci = mi.classInfo;
+    var rp = ci.constantPool.resolved;
     var stack = frame.stack;
+
+
     var returnValue = null;
 
 
     var traceBytecodes = false;
     var traceSourceLocation = true;
-    var lastSourceLocation;
 
     var index: any, value: any, constant: any;
     var a: any, b: any, c: any;
-    var pc: number, startPc: number;
+    var pc: number;
+
+    /**
+     * This is used to detect backwards branches for the purpose of on stack replacement.
+     */
+    var lastPC: number = -1;
+
     var type;
     var size;
 
@@ -247,49 +215,85 @@ module J2ME {
     var fieldInfo: FieldInfo;
     var classInfo: ClassInfo;
 
-    if (!frame.methodInfo.isOptimized && frame.methodInfo.bytecodeCount > 100) {
+    // We don't want to optimize methods for interpretation if we're going to be using the JIT until
+    // we teach the Baseline JIT about the new bytecodes.
+    if (!enableRuntimeCompilation && !frame.methodInfo.isOptimized && frame.methodInfo.stats.bytecodeCount > 100) {
       optimizeMethodBytecode(frame.methodInfo);
     }
 
-    if (perfWriter) {
-      var methodInfo: any = frame.methodInfo;
-      if (methodInfo.bytecodeCount > 100000 || methodInfo.interpreterCallCount > 10000) {
-        var bytecodeCountRatio = methodInfo.bytecodeCount / methodInfo.interpreterCallCount;
-        var details = "";
-        details += methodInfo.isSynchronized ? "S" : "";
-        details += methodInfo.exception_table.length ? "X" : "";
-        perfWriter.writeLn("Hot Method: " + methodInfo.implKey + " ops: " + methodInfo.bytecodeCount + ", calls: " + methodInfo.interpreterCallCount + ", ratio: " + bytecodeCountRatio.toFixed(2) + ", reset: " + methodInfo.resetCount + ". " + details);
+    mi.stats.interpreterCallCount ++;
 
-        methodInfo.resetCount ++;
-        methodInfo.bytecodeCount = 0;
-        methodInfo.interpreterCallCount = 0;
-      }
-    }
+    interpreterCount ++;
 
-    frame.methodInfo.interpreterCallCount ++;
-
+    O = null;
     while (true) {
-      interpreterMethodCounter && interpreterMethodCounter.count(frame.methodInfo.implKey);
-      ops ++;
-      frame.methodInfo.bytecodeCount ++;
-      frame.opPc = frame.pc;
-      var op: Bytecodes = frame.read8();
-      if (traceBytecodes) {
-        if (traceSourceLocation) {
-          if (frame.methodInfo) {
-            var sourceLocation = frame.methodInfo.getSourceLocationForPC(frame.pc - 1);
-            if (sourceLocation && !sourceLocation.equals(lastSourceLocation)) {
-              traceWriter && traceWriter.greenLn(sourceLocation.toString() + " " + CLASSES.getSourceLine(sourceLocation));
-              lastSourceLocation = sourceLocation;
-            }
-          }
-        }
-        if (traceWriter) {
-          frame.trace(traceWriter);
-        }
-      }
+      //bytecodeCount ++;
+      //mi.stats.bytecodeCount ++;
+      //
+      //// TODO: Make sure this works even if we JIT everything. At the moment it fails
+      //// for synthetic method frames which have bad max_local counts.
+      //
+      //// Inline heuristics that trigger JIT compilation here.
+      //if ((enableRuntimeCompilation &&
+      //     mi.state < MethodState.Compiled && // Give up if we're at this state.
+      //     mi.stats.backwardsBranchCount + mi.stats.interpreterCallCount > 10) ||
+      //    config.forceRuntimeCompilation) {
+      //  compileAndLinkMethod(mi);
+      //}
 
       try {
+        //if (frame.pc < lastPC) {
+        //  mi.stats.backwardsBranchCount ++;
+        //  if (enableOnStackReplacement && mi.state === MethodState.Compiled) {
+        //    // Just because we've jumped backwards doesn't mean we are at a loop header but it does mean that we are
+        //    // at the beggining of a basic block. This is a really cheap test and a convenient place to perform an
+        //    // on stack replacement.
+        //
+        //    if (mi.onStackReplacementEntryPoints.indexOf(frame.pc) > -1) {
+        //      onStackReplacementCount++;
+        //
+        //      // The current frame will be swapped out for a JIT frame, so pop it off the interpreter stack.
+        //      ctx.popFrame();
+        //
+        //      // Remember the return kind since we'll need it later.
+        //      var returnKind = mi.returnKind;
+        //
+        //      // Set the global OSR frame to the current frame.
+        //      O = frame;
+        //
+        //      // Set the current frame before doing the OSR in case an exception is thrown.
+        //      frame = ctx.current();
+        //
+        //      // Perform OSR, the callee reads the frame stored in |O| and updates its own state.
+        //      returnValue = O.methodInfo.fn();
+        //      if (U) {
+        //        return;
+        //      }
+        //
+        //      // Usual code to return from the interpreter or push the return value.
+        //      if (Frame.isMarker(frame)) {
+        //        return returnValue;
+        //      }
+        //      mi = frame.methodInfo;
+        //      ci = mi.classInfo;
+        //      rp = ci.constantPool.resolved;
+        //      stack = frame.stack;
+        //      lastPC = -1;
+        //
+        //      if (returnKind !== Kind.Void) {
+        //        if (isTwoSlot(returnKind)) {
+        //          stack.push2(returnValue);
+        //        } else {
+        //          stack.push(returnValue);
+        //        }
+        //      }
+        //    }
+        //  }
+        //}
+
+        lastPC = frame.opPC = frame.pc;
+        var op: Bytecodes = frame.read8();
+
         switch (op) {
           case Bytecodes.NOP:
             break;
@@ -327,61 +331,61 @@ module J2ME {
           case Bytecodes.LDC:
           case Bytecodes.LDC_W:
             index = (op === Bytecodes.LDC) ? frame.read8() : frame.read16();
-            constant = resolve(index, mi.classInfo, false);
+            constant = ci.constantPool.resolve(index, TAGS.CONSTANT_Any, false);
             stack.push(constant);
             break;
           case Bytecodes.LDC2_W:
             index = frame.read16();
-            constant = resolve(index, mi.classInfo, false);
+            constant = ci.constantPool.resolve(index, TAGS.CONSTANT_Any, false);
             stack.push2(constant);
             break;
           case Bytecodes.ILOAD:
-            stack.push(frame.getLocal(frame.read8()));
+            stack.push(frame.local[frame.read8()]);
             break;
           case Bytecodes.FLOAD:
-            stack.push(frame.getLocal(frame.read8()));
+            stack.push(frame.local[frame.read8()]);
             break;
           case Bytecodes.ALOAD:
-            stack.push(frame.getLocal(frame.read8()));
+            stack.push(frame.local[frame.read8()]);
             break;
           case Bytecodes.ALOAD_ILOAD:
-            stack.push(frame.getLocal(frame.read8()));
+            stack.push(frame.local[frame.read8()]);
             frame.pc ++;
-            stack.push(frame.getLocal(frame.read8()));
+            stack.push(frame.local[frame.read8()]);
             break;
           case Bytecodes.LLOAD:
           case Bytecodes.DLOAD:
-            stack.push2(frame.getLocal(frame.read8()));
+            stack.push2(frame.local[frame.read8()]);
             break;
           case Bytecodes.ILOAD_0:
           case Bytecodes.ILOAD_1:
           case Bytecodes.ILOAD_2:
           case Bytecodes.ILOAD_3:
-            stack.push(frame.getLocal(op - Bytecodes.ILOAD_0));
+            stack.push(frame.local[op - Bytecodes.ILOAD_0]);
             break;
           case Bytecodes.FLOAD_0:
           case Bytecodes.FLOAD_1:
           case Bytecodes.FLOAD_2:
           case Bytecodes.FLOAD_3:
-            stack.push(frame.getLocal(op - Bytecodes.FLOAD_0));
+            stack.push(frame.local[op - Bytecodes.FLOAD_0]);
             break;
           case Bytecodes.ALOAD_0:
           case Bytecodes.ALOAD_1:
           case Bytecodes.ALOAD_2:
           case Bytecodes.ALOAD_3:
-            stack.push(frame.getLocal(op - Bytecodes.ALOAD_0));
+            stack.push(frame.local[op - Bytecodes.ALOAD_0]);
             break;
           case Bytecodes.LLOAD_0:
           case Bytecodes.LLOAD_1:
           case Bytecodes.LLOAD_2:
           case Bytecodes.LLOAD_3:
-            stack.push2(frame.getLocal(op - Bytecodes.LLOAD_0));
+            stack.push2(frame.local[op - Bytecodes.LLOAD_0]);
             break;
           case Bytecodes.DLOAD_0:
           case Bytecodes.DLOAD_1:
           case Bytecodes.DLOAD_2:
           case Bytecodes.DLOAD_3:
-            stack.push2(frame.getLocal(op - Bytecodes.DLOAD_0));
+            stack.push2(frame.local[op - Bytecodes.DLOAD_0]);
             break;
           case Bytecodes.IALOAD:
           case Bytecodes.FALOAD:
@@ -404,47 +408,47 @@ module J2ME {
           case Bytecodes.ISTORE:
           case Bytecodes.FSTORE:
           case Bytecodes.ASTORE:
-            frame.setLocal(frame.read8(), stack.pop());
+            frame.local[frame.read8()] = stack.pop();
             break;
           case Bytecodes.LSTORE:
           case Bytecodes.DSTORE:
-            frame.setLocal(frame.read8(), stack.pop2());
+            frame.local[frame.read8()] = stack.pop2();
             break;
           case Bytecodes.ISTORE_0:
           case Bytecodes.FSTORE_0:
           case Bytecodes.ASTORE_0:
-            frame.setLocal(0, stack.pop());
+            frame.local[0] = stack.pop();
             break;
           case Bytecodes.ISTORE_1:
           case Bytecodes.FSTORE_1:
           case Bytecodes.ASTORE_1:
-            frame.setLocal(1, stack.pop());
+            frame.local[1] = stack.pop();
             break;
           case Bytecodes.ISTORE_2:
           case Bytecodes.FSTORE_2:
           case Bytecodes.ASTORE_2:
-            frame.setLocal(2, stack.pop());
+            frame.local[2] = stack.pop();
             break;
           case Bytecodes.ISTORE_3:
           case Bytecodes.FSTORE_3:
           case Bytecodes.ASTORE_3:
-            frame.setLocal(3, stack.pop());
+            frame.local[3] = stack.pop();
             break;
           case Bytecodes.LSTORE_0:
           case Bytecodes.DSTORE_0:
-            frame.setLocal(0, stack.pop2());
+            frame.local[0] = stack.pop2();
             break;
           case Bytecodes.LSTORE_1:
           case Bytecodes.DSTORE_1:
-            frame.setLocal(1, stack.pop2());
+            frame.local[1] = stack.pop2();
             break;
           case Bytecodes.LSTORE_2:
           case Bytecodes.DSTORE_2:
-            frame.setLocal(2, stack.pop2());
+            frame.local[2] = stack.pop2();
             break;
           case Bytecodes.LSTORE_3:
           case Bytecodes.DSTORE_3:
-            frame.setLocal(3, stack.pop2());
+            frame.local[3] = stack.pop2();
             break;
           case Bytecodes.IASTORE:
           case Bytecodes.FASTORE:
@@ -537,12 +541,12 @@ module J2ME {
           case Bytecodes.IINC:
             index = frame.read8();
             value = frame.read8Signed();
-            frame.setLocal(index, frame.getLocal(index) + value);
+            frame.local[index] += value | 0;
             break;
           case Bytecodes.IINC_GOTO:
             index = frame.read8();
             value = frame.read8Signed();
-            frame.setLocal(index, frame.getLocal(index) + value);
+            frame.local[index] += frame.local[index];
             frame.pc ++;
             frame.pc = frame.readTargetPC();
             break;
@@ -862,7 +866,7 @@ module J2ME {
             frame.pc = pc;
             break;
           case Bytecodes.RET:
-            frame.pc = frame.getLocal(frame.read8());
+            frame.pc = frame.local[frame.read8()];
             break;
           case Bytecodes.I2L:
             stack.push2(Long.fromInt(stack.pop()));
@@ -917,29 +921,22 @@ module J2ME {
           case Bytecodes.NEWARRAY:
             type = frame.read8();
             size = stack.pop();
-            if (size < 0) {
-              throw $.newNegativeArraySizeException();
-            }
-            stack.push(util.newPrimitiveArray("????ZCFDBSIJ"[type], size));
+            stack.push(newArray(PrimitiveClassInfo["????ZCFDBSIJ"[type]].klass, size));
             break;
           case Bytecodes.ANEWARRAY:
             index = frame.read16();
-            classInfo = resolveClass(index, mi.classInfo, false);
-            classInitCheck(classInfo, frame.pc - 3);
+            classInfo = resolveClass(index, mi.classInfo);
             size = stack.pop();
-            if (size < 0) {
-              throw $.newNegativeArraySizeException();
-            }
-            stack.push(util.newArray(classInfo, size));
+            stack.push(newArray(classInfo.klass, size));
             break;
           case Bytecodes.MULTIANEWARRAY:
             index = frame.read16();
-            classInfo = resolveClass(index, mi.classInfo, false);
+            classInfo = resolveClass(index, mi.classInfo);
             var dimensions = frame.read8();
             var lengths = new Array(dimensions);
             for (var i = 0; i < dimensions; i++)
               lengths[i] = stack.pop();
-            stack.push(util.newMultiArray(classInfo, lengths.reverse()));
+            stack.push(J2ME.newMultiArray(classInfo.klass, lengths.reverse()));
             break;
           case Bytecodes.ARRAYLENGTH:
             array = stack.pop();
@@ -956,21 +953,34 @@ module J2ME {
             break;
           case Bytecodes.GETFIELD:
             index = frame.read16();
-            fieldInfo = resolveField(index, mi.classInfo, false);
+            fieldInfo = mi.classInfo.constantPool.resolveField(index, false);
+            object = stack.pop();
+            stack.pushKind(fieldInfo.kind, fieldInfo.get(object));
+            frame.patch(3, Bytecodes.GETFIELD, Bytecodes.RESOLVED_GETFIELD);
+            break;
+          case Bytecodes.RESOLVED_GETFIELD:
+            fieldInfo = <FieldInfo><any>rp[frame.read16()];
             object = stack.pop();
             stack.pushKind(fieldInfo.kind, fieldInfo.get(object));
             break;
           case Bytecodes.PUTFIELD:
             index = frame.read16();
-            fieldInfo = resolveField(index, mi.classInfo, false);
+            fieldInfo = mi.classInfo.constantPool.resolveField(index, false);
+            value = stack.popKind(fieldInfo.kind);
+            object = stack.pop();
+            fieldInfo.set(object, value);
+            frame.patch(3, Bytecodes.PUTFIELD, Bytecodes.RESOLVED_PUTFIELD);
+            break;
+          case Bytecodes.RESOLVED_PUTFIELD:
+            fieldInfo = <FieldInfo><any>rp[frame.read16()];
             value = stack.popKind(fieldInfo.kind);
             object = stack.pop();
             fieldInfo.set(object, value);
             break;
           case Bytecodes.GETSTATIC:
             index = frame.read16();
-            fieldInfo = resolveField(index, mi.classInfo, true);
-            classInitCheck(fieldInfo.classInfo, frame.pc - 3);
+            fieldInfo = mi.classInfo.constantPool.resolveField(index, true);
+            classInitAndUnwindCheck(fieldInfo.classInfo, frame.pc - 3);
             if (U) {
               return;
             }
@@ -979,11 +989,8 @@ module J2ME {
             break;
           case Bytecodes.PUTSTATIC:
             index = frame.read16();
-            fieldInfo = resolveField(index, mi.classInfo, true);
-            if (fieldInfo.classInfo.className === "gnu/testlet/vm/InterfaceTest$A") {
-              debugger;
-            }
-            classInitCheck(fieldInfo.classInfo, frame.pc - 3);
+            fieldInfo = mi.classInfo.constantPool.resolveField(index, true);
+            classInitAndUnwindCheck(fieldInfo.classInfo, frame.pc - 3);
             if (U) {
               return;
             }
@@ -991,26 +998,26 @@ module J2ME {
             break;
           case Bytecodes.NEW:
             index = frame.read16();
-            classInfo = resolveClass(index, mi.classInfo, false);
-            classInitCheck(classInfo, frame.pc - 3);
+            classInfo = resolveClass(index, mi.classInfo);
+            classInitAndUnwindCheck(classInfo, frame.pc - 3);
             if (U) {
               return;
             }
-            stack.push(util.newObject(classInfo));
+            stack.push(newObject(classInfo.klass));
             break;
           case Bytecodes.CHECKCAST:
             index = frame.read16();
-            classInfo = resolveClass(index, mi.classInfo, false);
+            classInfo = resolveClass(index, mi.classInfo);
             object = stack[stack.length - 1];
             if (object && !isAssignableTo(object.klass, classInfo.klass)) {
               throw $.newClassCastException(
-                  object.klass.classInfo.className + " is not assignable to " +
-                  classInfo.className);
+                  object.klass.classInfo.getClassNameSlow() + " is not assignable to " +
+                  classInfo.getClassNameSlow());
             }
             break;
           case Bytecodes.INSTANCEOF:
             index = frame.read16();
-            classInfo = resolveClass(index, mi.classInfo, false);
+            classInfo = resolveClass(index, mi.classInfo);
             object = stack.pop();
             var result = !object ? false : isAssignableTo(object.klass, classInfo.klass);
             stack.push(result ? 1 : 0);
@@ -1025,7 +1032,7 @@ module J2ME {
           case Bytecodes.MONITORENTER:
             object = stack.pop();
             ctx.monitorEnter(object);
-            if (U === VMState.Pausing) {
+            if (U === VMState.Pausing || U === VMState.Stopping) {
               return;
             }
             break;
@@ -1036,124 +1043,233 @@ module J2ME {
           case Bytecodes.WIDE:
             frame.wide();
             break;
-          case Bytecodes.INVOKEVIRTUAL:
-          case Bytecodes.INVOKESPECIAL:
-          case Bytecodes.INVOKESTATIC:
-          case Bytecodes.INVOKEINTERFACE:
-            var startPc = frame.pc - 1;
+          case Bytecodes.RESOLVED_INVOKEVIRTUAL:
             index = frame.read16();
-            if (op === Bytecodes.INVOKEINTERFACE) {
-              var argsNumber = frame.read8();
-              var zero = frame.read8();
+            var calleeMethodInfo = <MethodInfo><any>rp[index];
+            var object = frame.peekInvokeObject(calleeMethodInfo);
+
+            calleeMethod = object[calleeMethodInfo.virtualName];
+            var calleeTargetMethodInfo: MethodInfo = calleeMethod.methodInfo;
+
+            if (calleeTargetMethodInfo &&
+                !calleeTargetMethodInfo.isSynchronized &&
+                !calleeTargetMethodInfo.isNative &&
+                calleeTargetMethodInfo.state !== MethodState.Compiled) {
+              var calleeFrame = Frame.create(calleeTargetMethodInfo, []);
+              ArrayUtilities.popManyInto(stack, calleeTargetMethodInfo.argumentSlots, calleeFrame.local);
+              ctx.pushFrame(calleeFrame);
+              frame = calleeFrame;
+              mi = frame.methodInfo;
+              mi.stats.interpreterCallCount ++;
+              ci = mi.classInfo;
+              rp = ci.constantPool.resolved;
+              stack = frame.stack;
+              lastPC = -1;
+              continue;
             }
-            var isStatic = (op === Bytecodes.INVOKESTATIC);
-            var methodInfo: any = mi.classInfo.constant_pool[index];
-            if (methodInfo.tag) {
-              methodInfo = resolve(index, mi.classInfo, isStatic);
-              if (isStatic) {
-                classInitCheck(methodInfo.classInfo, startPc);
-                if (U) {
-                  return;
-                }
-              }
-            }
-            object = null;
-            var fn;
-            if (!isStatic) {
-              object = frame.peekInvokeObject(methodInfo);
-              switch (op) {
-                case Bytecodes.INVOKEVIRTUAL:
-                case Bytecodes.INVOKEINTERFACE:
-                  fn = object[methodInfo.mangledName];
-                  break;
-                case Bytecodes.INVOKESPECIAL:
-                  checkNull(object);
-                  fn = methodInfo.fn;
-                  break;
-              }
-            } else {
-              fn = methodInfo.fn;
-            }
+
+            // Call directy.
             var returnValue;
-            var argumentSlots = methodInfo.hasTwoSlotArguments ? -1 : methodInfo.argumentSlots;
+            var argumentSlots = calleeMethodInfo.argumentSlots;
             switch (argumentSlots) {
               case 0:
-                returnValue = fn.call(object);
+                returnValue = calleeMethod.call(object);
                 break;
               case 1:
                 a = stack.pop();
-                returnValue = fn.call(object, a);
+                returnValue = calleeMethod.call(object, a);
                 break;
               case 2:
                 b = stack.pop();
                 a = stack.pop();
-                returnValue = fn.call(object, a, b);
+                returnValue = calleeMethod.call(object, a, b);
                 break;
               case 3:
                 c = stack.pop();
                 b = stack.pop();
                 a = stack.pop();
-                returnValue = fn.call(object, a, b, c);
+                returnValue = calleeMethod.call(object, a, b, c);
                 break;
               default:
-                if (methodInfo.hasTwoSlotArguments) {
-                  frame.popArgumentsInto(methodInfo.signatureDescriptor, argArray);
-                } else {
-                  popManyInto(stack, methodInfo.argumentSlots, argArray);
-                }
-                var returnValue = fn.apply(object, argArray);
+                Debug.assertUnreachable("Unexpected number of arguments");
+                break;
             }
-            if (!isStatic) stack.pop();
-
+            stack.pop();
             if (!release) {
-              checkReturnValue(methodInfo, returnValue);
+              checkReturnValue(calleeMethodInfo, returnValue);
             }
-
             if (U) {
-              // perfWriter && perfWriter.writeLn("I Unwind: " + frame.methodInfo.implKey);
               return;
             }
-
-            if (methodInfo.getReturnKind() !== Kind.Void) {
-              release || assert(returnValue !== undefined, methodInfo.signatureDescriptor + " " + methodInfo.returnKind + " " + Kind.Void);
-              if (isTwoSlot(methodInfo.getReturnKind())) {
+            if (calleeMethodInfo.returnKind !== Kind.Void) {
+              if (isTwoSlot(calleeMethodInfo.returnKind)) {
                 stack.push2(returnValue);
               } else {
                 stack.push(returnValue);
               }
             }
             break;
-          case Bytecodes.RETURN:
-            var returnValue = popFrame(0);
-            if (returnValue !== CONTINUE_AFTER_POPFRAME) {
-              return returnValue;
+          case Bytecodes.INVOKEVIRTUAL:
+          case Bytecodes.INVOKESPECIAL:
+          case Bytecodes.INVOKESTATIC:
+          case Bytecodes.INVOKEINTERFACE:
+            index = frame.read16();
+            if (op === Bytecodes.INVOKEINTERFACE) {
+              frame.read16(); // Args Number & Zero
+            }
+            var isStatic = (op === Bytecodes.INVOKESTATIC);
+
+            // Resolve method and do the class init check if necessary.
+            var calleeMethodInfo = mi.classInfo.constantPool.resolveMethod(index, isStatic);
+
+            // Fast path for some of the most common interpreter call targets.
+            if (calleeMethodInfo.classInfo.getClassNameSlow() === "java/lang/Object" &&
+                calleeMethodInfo.name === "<init>") {
+              stack.pop();
+              continue;
+            }
+
+            if (isStatic) {
+              classInitAndUnwindCheck(calleeMethodInfo.classInfo, lastPC);
+              if (U) {
+                return;
+              }
+            }
+
+            // Figure out the target method.
+            var calleeTargetMethodInfo: MethodInfo = calleeMethodInfo;
+            object = null;
+            var calleeMethod: any;
+            if (!isStatic) {
+              object = frame.peekInvokeObject(calleeMethodInfo);
+              switch (op) {
+                case Bytecodes.INVOKEVIRTUAL:
+                  if (!calleeTargetMethodInfo.hasTwoSlotArguments &&
+                      calleeTargetMethodInfo.argumentSlots < 4) {
+                    frame.patch(3, Bytecodes.INVOKEVIRTUAL, Bytecodes.RESOLVED_INVOKEVIRTUAL);
+                  }
+                case Bytecodes.INVOKEINTERFACE:
+                  var name = op === Bytecodes.INVOKEVIRTUAL ? calleeMethodInfo.virtualName : calleeMethodInfo.mangledName;
+                  calleeMethod = object[name];
+                  calleeTargetMethodInfo = calleeMethod.methodInfo;
+                  break;
+                case Bytecodes.INVOKESPECIAL:
+                  checkNull(object);
+                  calleeMethod = getLinkedMethod(calleeMethodInfo);
+                  break;
+              }
             } else {
-              frame = ctx.current();
-              mi = frame && frame.methodInfo || null;
-              stack = frame && frame.stack || null;
+              calleeMethod = getLinkedMethod(calleeMethodInfo);
+            }
+            // Call method directly in the interpreter if we can.
+            if (calleeTargetMethodInfo && !calleeTargetMethodInfo.isNative && calleeTargetMethodInfo.state !== MethodState.Compiled) {
+              var calleeFrame = Frame.create(calleeTargetMethodInfo, []);
+              ArrayUtilities.popManyInto(stack, calleeTargetMethodInfo.argumentSlots, calleeFrame.local);
+              ctx.pushFrame(calleeFrame);
+              frame = calleeFrame;
+              mi = frame.methodInfo;
+              mi.stats.interpreterCallCount ++;
+              ci = mi.classInfo;
+              rp = ci.constantPool.resolved;
+              stack = frame.stack;
+              lastPC = -1;
+              if (calleeTargetMethodInfo.isSynchronized) {
+                if (!calleeFrame.lockObject) {
+                  frame.lockObject = calleeTargetMethodInfo.isStatic
+                    ? calleeTargetMethodInfo.classInfo.getClassObject()
+                    : frame.local[0];
+                }
+                ctx.monitorEnter(calleeFrame.lockObject);
+                if (U === VMState.Pausing || U === VMState.Stopping) {
+                  return;
+                }
+              }
+              continue;
+            }
+
+            // Call directy.
+            var returnValue;
+            var argumentSlots = calleeMethodInfo.hasTwoSlotArguments ? -1 : calleeMethodInfo.argumentSlots;
+            switch (argumentSlots) {
+              case 0:
+                returnValue = calleeMethod.call(object);
+                break;
+              case 1:
+                a = stack.pop();
+                returnValue = calleeMethod.call(object, a);
+                break;
+              case 2:
+                b = stack.pop();
+                a = stack.pop();
+                returnValue = calleeMethod.call(object, a, b);
+                break;
+              case 3:
+                c = stack.pop();
+                b = stack.pop();
+                a = stack.pop();
+                returnValue = calleeMethod.call(object, a, b, c);
+                break;
+              default:
+                if (calleeMethodInfo.hasTwoSlotArguments) {
+                  frame.popArgumentsInto(calleeMethodInfo, argArray);
+                } else {
+                  popManyInto(stack, calleeMethodInfo.argumentSlots, argArray);
+                }
+                var returnValue = calleeMethod.apply(object, argArray);
+            }
+
+            if (!isStatic) {
+              stack.pop();
+            }
+
+            if (!release) {
+              checkReturnValue(calleeMethodInfo, returnValue);
+            }
+
+            if (U) {
+              return;
+            }
+
+            if (calleeMethodInfo.returnKind !== Kind.Void) {
+              if (isTwoSlot(calleeMethodInfo.returnKind)) {
+                stack.push2(returnValue);
+              } else {
+                stack.push(returnValue);
+              }
             }
             break;
+
+          case Bytecodes.LRETURN:
+          case Bytecodes.DRETURN:
+            returnValue = stack.pop();
           case Bytecodes.IRETURN:
           case Bytecodes.FRETURN:
           case Bytecodes.ARETURN:
-            var returnValue = popFrame(1);
-            if (returnValue !== CONTINUE_AFTER_POPFRAME) {
-              return returnValue;
-            } else {
-              frame = ctx.current();
-              mi = frame && frame.methodInfo || null;
-              stack = frame && frame.stack || null;
+            returnValue = stack.pop();
+          case Bytecodes.RETURN:
+            var callee = ctx.popFrame();
+            if (callee.lockObject) {
+              ctx.monitorExit(callee.lockObject);
             }
-            break;
-          case Bytecodes.LRETURN:
-          case Bytecodes.DRETURN:
-            var returnValue = popFrame(2);
-            if (returnValue !== CONTINUE_AFTER_POPFRAME) {
+            callee.free();
+            frame = ctx.current();
+            if (Frame.isMarker(frame)) { // Marker or Start Frame
+              if (op === Bytecodes.RETURN) {
+                return undefined;
+              }
               return returnValue;
+            }
+            mi = frame.methodInfo;
+            ci = mi.classInfo;
+            rp = ci.constantPool.resolved;
+            stack = frame.stack;
+            lastPC = -1;
+            if (op === Bytecodes.RETURN) {
+              // Nop.
+            } else if (op === Bytecodes.LRETURN || op === Bytecodes.DRETURN) {
+              stack.push2(returnValue);
             } else {
-              frame = ctx.current();
-              mi = frame && frame.methodInfo || null;
-              stack = frame && frame.stack || null;
+              stack.push(returnValue);
             }
             break;
           default:
@@ -1161,30 +1277,34 @@ module J2ME {
             throw new Error("Opcode " + opName + " [" + op + "] not supported.");
         }
       } catch (e) {
-        // This could potentially hide interpreter exceptions. Maybe we should only do this for
-        // compiled/native functions.
-        if (e.name === "TypeError") {
-          // JavaScript's TypeError is analogous to a NullPointerException.
-          e = $.newNullPointerException(e.message);
-        } else if (!e.klass) {
-          // A non-java exception was thrown. Rethrow so it is not handled by throw_.
+        // This can happen if we OSR into a frame that is right after a marker
+        // frame. If an exception occurs in this frame, then we end up here and
+        // the current frame is a marker frame, so we'll need to rethrow.
+        if (Frame.isMarker(ctx.current())) {
           throw e;
         }
-
-        throw_(e);
+        e = translateException(e);
+        if (!e.klass) {
+          // A non-java exception was thrown. Rethrow so it is not handled by tryCatch.
+          throw e;
+        }
+        tryCatch(e);
         frame = ctx.current();
-        mi = frame && frame.methodInfo || null;
-        stack = frame && frame.stack || null;
+        assert (!Frame.isMarker(frame));
+        mi = frame.methodInfo;
+        ci = mi.classInfo;
+        rp = ci.constantPool.resolved;
+        stack = frame.stack;
+        lastPC = -1;
         continue;
       }
     }
   }
 
   export class VM {
-    static execute = interpret;
+    static execute = J2ME.interpret;
     static Yield = {toString: function () { return "YIELD" }};
     static Pause = {toString: function () { return "PAUSE" }};
-    static DEBUG = false;
     static DEBUG_PRINT_ALL_EXCEPTIONS = false;
   }
 }
