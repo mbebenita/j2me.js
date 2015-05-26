@@ -57,7 +57,11 @@ module J2ME {
    * The closest floating-point representation to this long value.
    */
   export function longToNumber(l: number, h: number): number {
-    return h * Constants.TWO_PWR_32_DBL + ((l >= 0) ? l : Constants.TWO_PWR_32_DBL + l);
+    var n = h * Constants.TWO_PWR_32_DBL + ((l >= 0) ? l : Constants.TWO_PWR_32_DBL + l);
+    if (Math.abs(n) > Constants.NUMBER_MAX_SAFE_INTEGER) {
+      console.warn("unsafe conversion from long to number: " + h + "," + l);
+    }
+    return n;
   }
 
   export function numberToLong(v: number): number {

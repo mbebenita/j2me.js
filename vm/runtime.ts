@@ -1970,7 +1970,11 @@ module J2ME {
     LONG_MIN_HIGH = 0x80000000,
 
 
-    TWO_PWR_32_DBL = 4294967296
+    TWO_PWR_32_DBL = 4294967296,
+
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/MAX_SAFE_INTEGER
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isSafeInteger
+    NUMBER_MAX_SAFE_INTEGER = Math.pow(2, 53) - 1,
   }
 
   export function monitorEnter(object: J2ME.java.lang.Object) {
