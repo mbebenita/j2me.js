@@ -1,0 +1,105 @@
+\documentclass{acm_proc_article-sp}
+
+\begin{document}
+
+\title{A Reasonably Fast and Fully Capable JVM in JavaScript}
+
+\numberofauthors{4}
+\author{
+\alignauthor Michael Bebenita
+\alignauthor Brendan Dahl
+\and
+\alignauthor Marco Castelluccio
+\alignauthor Myk Melez
+\and
+\alignauthor Andreas Gal
+}
+
+\maketitle
+\begin{abstract}
+Dramatic improvements in browser performance have now made JavaScript a viable compilation target for a wide range of programming languages.
+While targetting JavaScript is fairly easy, navigating optimization tiers wrapped in arcane magic and mystery make squeezing erformance out of modern JavaScript engines incredibly difficult.
+In this paper we explore the implementation of a fully capable Java virtual machine. One that supports: class loading, interpretation, dynamic compilation, on-stack-replacement, deoptimization, threading, synchronization, garbage collection, finalization, many of the features that make Java, Java.
+\end{abstract}
+
+% \category{D.3.4}{Programming Languages}{Processors}
+
+\terms{Languages, Design}
+
+\keywords{ACM proceedings, \LaTeX, text tagging}
+
+\section{Introduction}
+
+Like it or not, JavaScript is the de facto lingua franca. ...
+Lots of attempts at compiling to the web, C/C++ via emscripten has be highly successful.
+Java attempts have not been as successful, too slow, large code size.
+Java needs class loading, it needs faster startup, low 
+We believe compiling Java to JavaScript should be faster than writing JavaScript by hand.
+
+The web pptimize for size and startup, not throughput.
+
+\section{System Constraints}
+
+In JavaScript you can't do this and that. No threads, no weak references, you can't do synch I/O, etc. ...
+In JavaScript you have to pay for your cake before you eat it, vm code size matters.
+
+\section{Implementation}
+
+This is how e wrote it all, and the problmens we ran into.
+
+\subsection{Class Loading}
+
+\subsubsection{Compact Class Representation}
+
+\subsubsection{UTF8 Strings}
+
+\subsubsection{GZip}
+
+\subsection{Stack Layout}
+
+\subsubsection{Object Arrays}
+
+\subsubsection{Typed Arrays}
+
+\subsection{Interpreter}
+
+\subsubsection{Switch Loop}
+
+\subsubsection{Hosted Interpreter}
+
+\subsection{Interpreter}
+
+\subsection{Just-in-Time Compiler}
+
+\subsubsection{Relooper}
+
+\subsection{Threading}
+
+\subsubsection{Scheduling}
+
+\subsubsection{Asynchronous I/O}
+
+\subsection{Unwinding}
+
+\subsection{On-Stack-Replacement}
+
+\subsection{Garbage Collection}
+
+\subsection{Performance Tunning}
+
+\subsubsection{Startup Speed}
+
+\subsubsection{Memory Usage}
+
+\subsection{Citations}
+
+\subsection{Evaluation}
+
+\section{Related Work}
+
+\section{Conclusions}
+
+\bibliographystyle{abbrv}
+\bibliography{sigproc}  % sigproc.bib is the name of the Bibliography in this case
+
+\end{document}
