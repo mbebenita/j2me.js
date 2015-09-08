@@ -11,15 +11,14 @@ Email         : other@bar.com
 Heading Base  : 2
 Bib style     : plainnat
 Bibliography  : example.bib
-Doc class     : [reprint,nocopyrightspace]style/sigplanconf.cls
+Doc class     : [reprint,nocopyrightspace]acm_proc_article-sp.cls
 
 [TITLE]
 
 ~ Abstract
-There is more in you of good than you know, child of the kindly West.
-Some courage and some wisdom, blended in measure. If more of us valued
-food and cheer and song above hoarded gold, it would be a merrier world.
-But sad or merry, I must leave it now. Farewell!
+Dramatic improvements in browser performance have now made JavaScript a viable compilation target for a wide range of programming languages.
+While targetting JavaScript is fairly easy, navigating optimization tiers wrapped in arcane magic and mystery make squeezing performance out of modern JavaScript engines incredibly difficult.
+In this paper we explore the implementation of a fully capable Java virtual machine. One that supports: class loading, interpretation, dynamic compilation, on-stack-replacement, deoptimization, threading, synchronization, garbage collection, finalization, many of the features that make Java, Java.
 ~
 
 ~ TexRaw
