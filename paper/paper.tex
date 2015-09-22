@@ -127,11 +127,19 @@ This encoding is different from the encoding in the \texttt{.class} file but it 
 
 \subsection{Threading}
 
+A JVM that needs to run even mildly sophisticated applications must implement threads.
+Java threads are typically implemented using the underlying operating system's threads.
+JavaScript does not have access to the operating system's raw threads, but it does allow for concurrent programming with the use of web workers which are a similar concept to threads, but differ in key ways.
+Each web worker runs in its own isolated execution context and can only share data through a copying message passing system.
+Web workers also follow JavaScript's run-to-completion execution model with an event loop, which makes it impossible to lock or wait on another web worker.
+With the aforementioned limitations of web workers our VM instead emulates threads entirely in the main JavaScript event loop.
+This allows us to share data easily, but it still comes with a number of challenges.
+
+Footnote:???In the future web workers may be a viable option to emulate threading with the advent of shared array buffers, but at the time of creating our VM no browsers supported this option.
+
+\subsubsection{Asynchronous I/O, Synchronization, and Context Switching}
+
 \subsubsection{Scheduling}
-
-\subsubsection{Asynchronous I/O}
-
-\subsection{Unwinding}
 
 \subsection{On-Stack-Replacement}
 
