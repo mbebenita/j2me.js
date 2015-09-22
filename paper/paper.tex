@@ -105,13 +105,18 @@ This encoding is different from the encoding in the \texttt{.class} file but it 
 \item Holding on to references to JavaScript objects from Java objects constrains the design of the Java object layout, as later described in \fref{sec:objectLayout}.
 \end{enumerate}
 
-\subsection{Stack Layout}
-
 \subsection{Object Layout} \label{sec:objectLayout}
+
+The design of the object model has far reaching consequences.
+The straightforward approach is to model Java's inheritance hierarchy on top of JavaScript's prototypical inheritance chain.
+
+\subsubsection{Object}
+
+\subsubsection{Typed Arrays}
 
 \subsubsection{Object Arrays}
 
-\subsubsection{Typed Arrays}
+\subsection{Stack Layout}
 
 \subsection{Interpreter}
 
