@@ -1,5 +1,6 @@
 \documentclass{acm_proc_article-sp}
 \usepackage{graphicx}
+\usepackage[plain]{fancyref}
 
 \begin{document}
 
@@ -20,8 +21,8 @@
 \begin{abstract}
 Dramatic improvements in browser performance have now made JavaScript a viable compilation target for a wide range of programming languages.
 While targetting JavaScript is fairly easy, navigating optimization tiers wrapped in arcane magic and mystery make squeezing performance out of modern JavaScript engines incredibly difficult.
-In this paper we explore the implementation of a fully capable Java virtual machine.
-One that supports: class loading, interpretation, dynamic compilation, on-stack-replacement, deoptimization, threading, synchronization, garbage collection, finalization, many of the features that make Java, Java.
+In this paper we explore the implementation of a fully capable Java virtual machine in JavaScript.
+One that supports: class loading, interpretation, dynamic compilation, on-stack-replacement, deoptimization, threading, synchronization, garbage collection, finalization, many of the other features that make Java, Java.
 \end{abstract}
 
 % \category{D.3.4}{Programming Languages}{Processors}
@@ -47,6 +48,8 @@ In JavaScript you have to pay for your cake before you eat it, vm code size matt
 
 \section{Motivation}
 
+
+
 \section{Implementation}
 
 \subsection{Class Loading}
@@ -71,7 +74,9 @@ Parsing introduces a significant latency delay and should be deferred as long mu
 \item The \texttt{.class} file structure is compact. Reflecting this into an JavaScript object graph more than doubles the size of the data structure.
 \end{enumerate}
 
-To work around these limitations and still provide a convenient way to represent \texttt{.class} files, we create views on the underlying \texttt{.class} file buffer. Access to most properties is performed via accessor getters that lazily construct additionaly subviews as needed. The advantage of this approach is that most of the data is kept in the original buffer and never reflected into JavaScript properties.
+To work around these limitations and still provide a convenient way to represent \texttt{.class} files, we create views on the underlying \texttt{.class} file buffer.
+Access to most properties is performed via accessor getters that lazily construct additionaly subviews as needed.
+The advantage of this approach is that most of the data is kept in the original buffer and never reflected into JavaScript properties.
 
 \begin{figure}[htbp]
 \begin{center}
@@ -83,13 +88,26 @@ To work around these limitations and still provide a convenient way to represent
 
 \subsubsection{Strings}
 
-While its tempting to reflect Java strings as JavaScript strings, it turns out that its a lot more effective to keep them in their original representation.
-Strings in the JavaScript engine are heavily optimized. Taking advantage of this fact at first seems like a good idea, not only for convenience but also for performance reasons.
-Unfortunately reflecting Java strings as JavaScript strings caused a lot of unintended consequences.
-Decoding Java's UTF-8 encoding of strings is slow and usually unnecessary. Much of the \texttt{.class} file 
+While it is tempting to reflect Java strings as JavaScript strings, it turns out that it is a lot more effective to keep them in their original representation.
+Strings in modern JavaScript engines are heavily optimized.
+Taking advantage of this fact seems like a good idea at first, not only for convenience but also for performance reasons.
+Unfortunately reflecting Java strings as JavaScript strings causes a lot of unintended consequences:
 
+\begin{enumerate}
+\item Java \texttt{.class} files use a slightly modified UTF-8 string encoding scheme.
+Decoding this scheeme is inefficient because JavaScript provides no efficient means of constructing strings from UTF-8 sequences.
+More importantly, it is often unnecessary.
+Most of the strings that appear in \texttt{.class} files are used for linking where comparisons and hashing are by far the most frequent operations.
+Both of these operations are faster to implement on the original string representation and don't require UTF-8 decoding.
+\item Java \texttt{.class} files contain a large number of strings, storing them in two different formats can take up a significant amount of memory.
+\item Java's \texttt{String} class manages an internal \texttt{char []} array of characters.
+This encoding is different from the encoding in the \texttt{.class} file but it would still need an associated JavaScript string to be kept in sync with the underlying char buffer.
+\item Holding on to references to JavaScript objects from Java objects constrains the design of the Java object layout, as later described in \fref{sec:objectLayout}.
+\end{enumerate}
 
 \subsection{Stack Layout}
+
+\subsection{Object Layout} \label{sec:objectLayout}
 
 \subsubsection{Object Arrays}
 
