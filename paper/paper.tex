@@ -149,7 +149,7 @@ The design of the object model has far reaching consequences.
 \subsubsection{JavaScript Objects}
 The straightforward approach is to model Java's inheritance hierarchy on top of JavaScript's prototypical inheritance chain (\fref{fig:objects} ()).
 In this approach, each Java class is modeled as a JavaScript constructor \footnote{Java constructors are invoked explicity during bytecode execution and should no be confused with the JavaScript constructors in this case, the latter act more like object initializers.} function that initializes all of its fields to default values.
-The function's default prototype object is linked up to the base class's default prototype and then populated with the virtual methods in the class.
+The function's default prototype object is linked up to the base class's default prototype and then populated with virtual methods.
 JavaScript's prototype lookup mechanism takes care of the rest, emulating both virtual dispatch and interface dispatch.
 % \footnote{Java classes may have duplicate field and/or method names, therefore signature should be used as unique identifiers.}
 
@@ -181,15 +181,27 @@ snake.bite();
 The main benefit of this approach is that it is easy to implement and understand.
 It uses a every common code pattern that modern JavaScript VMs are highly tuned for.
 These JavaScript objects have a highly regular structure, exactly the kind of structure that hidden class optimizations in JavaScript VMs are desinged to detect.
-A JavaScript object is effectively ordered key/value dictionary that start off with a base shape.
-As properties are added or removed the shape of the object changes.
-The shape of the object identifies its internal structure.
+
+\paragraph{Field Access and Hidden Classes}
+Conceptyally, all JavaScript objects are chained key/value ordered dictionaries.
+Keys are usually strings \footnote{Even arrays for behave this way, keys are strings and don't necessarily need to be consecutive.} but values can vary in type.
+All JavaScript objects have a hidden \texttt{\_\_proto\_\_} property that points to their prototype object.
+If a property lookup fails on an object, the property search continues recursively along the prototype chain.
+Cycles are not allowed in the prototype chain.
+The model is simple, flexible and very powerful but it is very difficult to implement efficiently.
+The most basic implementation of JavaScript objects uses chained hashtables.
+All modern JavaScript VMs use hidden classes to detect the structure of objects and optimize property access.
+The idea is farily simple.
+As properties are added or removed from an object, the shape of the object changes.
+The shape of the object identifies its internal structure and layout in memory.
 The order in which properties are added to objects is important, so $\shapeOf(\{x: 1, y: 2\}) \neq \shapeOf(\{y: 2, x: 1\})$, 
 however $\shapeOf(\{x: 1, y: 2, z: 3\}) \subset \shapeOf(\{x: 1, y: 2\})$ since it shares part of the shape.
-Instead of performing hashtable lookups at each access site, JavaScript JITs emit a quick check to see if the previously observed shape of the receiver object has changed, and if not, a fast path is taken that directly access a property at a known slot offset.
-If the shape has changed, the VM bails out of compiled code and resumes execution in an interpreter or baseline-compiler.
+The shape of an object also depends on the shape of its prototype, mutations along the prototype chain can potentially modify the shape of many objects.
+
+At a property access site, if the previously observed shape of the receiver object still holds, then the compiled code can take a faster code path where the property directly accessed at a known slot offset.
+If the object's shape has changed, the VM bails out of compiled code and resumes execution in an interpreter or baseline-compiler.
 These types of speculative optimizations are the bread and butter of modern JavaScript VMs.
-The trick is understanding how they behave and interact with an application.
+The trick is understanding how they behave and interact with an application. 
 
 If all goes well, the JavaScript assignmenet \texttt{snake.length = 3} is ultimately compiled down to a small sequence of X86 instructions: 
 \begin{verbatim}
@@ -203,11 +215,25 @@ Without intimate knowledge of the inner workings of the JavaScript VM, it's diff
 \paragraph{Type Checks}
 
 Type checking operations like \texttt{INSTANCEOF} and \texttt{CHECKCAST} can be implemented using the \texttt{instanceof} operator in JavaScript.
-However we found \texttt{instanceof} to be quite slow in practice and have opted for a more manual approach as described by Click~\cite{Click2002}.
-The basic idea is to keep track of all supertypes of a class in a table called the display.
-Type \texttt{S} is a subtype of \texttt{T} iff \texttt{T == S.klass.display[T.depth]}, where \texttt{T.depth} is type \texttt{T}'s depth in the class hierarchy. The display table can be stored in the prototype object, so \texttt{snake} instanceof \texttt{Animal} can be tested using \texttt{snake.klass.display[1] == 123} where \texttt{1} is \texttt{Animal}'s depth in the display and \texttt{123} is \texttt{Animal}'s unique class identifier.
+We found \texttt{instanceof} to be quite slow in practice and have opted for a more manual approach as described by Click~\cite{Click2002}.
+The basic idea is to keep track of all super types of a class in a table called the display.
+Type \texttt{S} is a subtype of \texttt{T} iff \texttt{T == S.klass.display[T.depth]}, where \texttt{T.depth} is type \texttt{T}'s depth in the class hierarchy. The display table can be stored in the prototype object, so \texttt{snake} instanceof \texttt{Animal} can be tested using \texttt{snake.display[1] == 123} where \texttt{1} is \texttt{Animal}'s depth in the display and \texttt{123} is \texttt{Animal}'s unique class identifier.
 Interface checks are implemented as a linear search in the list of implemented interfaces.
 If the interface is found, it's moved to the begining of the list to make subsequent interface checks quicker.
+
+\paragraph{Garbage Collection}
+
+Relying on JavaScript's object model means we can make use of its builtin garbage collector (GC).
+This is incredibly convenient because we don't have to invest an enourmous amount of effort in building a production quality garbage collector.
+A unified object model also allows us to interface with JavaScript APIs and code easily.
+
+\paragraph{The House of Cards Crumbles}
+
+JavaScript's memory management philosophy dictates that GC behavior must not be observable.
+JavaScript does not support weak references, because they could be used to detect GC behavior.
+A weakly reachable object does not prevent the GC from collecting it.
+One this happens, the weak reference is cleared and GC behaviour is detectable.
+Weak references are the basis of object finalization in Java, without JavaScript support for weak references it is impossible to build a correct JVM. 
 
 \subsubsection{TypedArrays}
 
